@@ -48,8 +48,13 @@ installs for the current user only — no admin prompt.
 | Tray icon | Open, Settings…, Pause, Quit |
 
 Everything else happens on its own: a Claude Code permission request opens the
-island with **Deny / Allow**, a finished session shows what it did, and
-your integrations sit in the coloured pills next to Mochi.
+island with **Deny / Allow** and says which session is asking, a finished
+session shows what it did, and every Claude Code session running — Windows or
+WSL — gets its own colour: the most recently active on the left with its
+steps, the next on the right with its current step, the others as small
+coloured Mochis below it (click one to bring it to the left). Integrations are
+off by default; switched on in Settings, they join the small Mochis after the
+sessions.
 
 ## Claude Code
 

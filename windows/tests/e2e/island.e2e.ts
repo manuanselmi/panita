@@ -34,7 +34,7 @@ import {
   waitForLog,
   webviewProcesses,
 } from "./harness";
-import { IslandPage, SIZES } from "./island-page";
+import { IslandPage, SIZES, type Overview } from "./island-page";
 
 // The documented PermissionRequest output (https://code.claude.com/docs/en/hooks),
 // written out here on purpose rather than imported from the Rust side.
@@ -61,6 +61,34 @@ const base = (extra: Record<string, unknown> = {}) => ({
 
 const permission = (command: string) =>
   base({ permission_mode: "default", tool_name: "Bash", tool_input: { command, description: "e2e" } });
+
+/** The sessions of the multi-session tests: Windows ones, and one inside WSL. */
+interface E2eSession {
+  id: string;
+  name: string;
+  cwd: string;
+  wsl?: string;
+}
+const S = {
+  panita: { id: "e2e-s1", name: "panita", cwd: String.raw`C:\e2e\panita` },
+  struxto: { id: "e2e-s2", name: "struxto", cwd: "/home/e2e/struxto", wsl: "Ubuntu-24.04" },
+  hekta: { id: "e2e-s3", name: "hekta", cwd: String.raw`C:\e2e\hekta` },
+  datasci: { id: "e2e-s4", name: "datasci", cwd: String.raw`C:\e2e\datasci` },
+  personal: { id: "e2e-s5", name: "personal", cwd: String.raw`C:\e2e\personal` },
+  sexto: { id: "e2e-s6", name: "sexto", cwd: String.raw`C:\e2e\sexto` },
+} satisfies Record<string, E2eSession>;
+
+/** A payload from session `s`, as Claude Code (and, for WSL, the relay) would send it. */
+const payloadOf = (s: E2eSession, extra: Record<string, unknown> = {}) => ({
+  session_id: s.id,
+  transcript_path: String.raw`C:\e2e\transcript.jsonl`,
+  cwd: s.cwd,
+  ...(s.wsl ? { wsl_distro: s.wsl } : {}),
+  ...extra,
+});
+
+const askFrom = (s: E2eSession, command: string) =>
+  payloadOf(s, { permission_mode: "default", tool_name: "Bash", tool_input: { command, description: "e2e" } });
 
 beforeAll(() => {
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
@@ -174,6 +202,8 @@ describe(`side instance "${INSTANCE}"`, () => {
       const [upper, lower] = [rows[i - 1], rows[i]];
       expect(lower.top, `rows overlap: ${JSON.stringify(rows)}`).toBeGreaterThanOrEqual(upper.bottom - 0.5);
     }
+    // One session: nobody else to show on the right.
+    expect((await page.overview()).quiet).toBe("No other sessions");
   });
 
   it("the ticker keeps up past twenty steps", async () => {
@@ -190,7 +220,8 @@ describe(`side instance "${INSTANCE}"`, () => {
     const from = readSideLog().length;
     const hook = runHook("PermissionRequest", permission("rm -rf ./build-e2e"));
 
-    await page.waitForApproval("Bash · rm -rf ./build-e2e");
+    const card = await page.waitForApproval("Bash · rm -rf ./build-e2e");
+    expect(card.who).toBe(PROJECT);
     const [, id] = await waitForLog(/hook PermissionRequest id=(\S+)/, 5_000, from);
     // Expanded to the approval card, and acknowledged to the relay.
     await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
@@ -297,12 +328,227 @@ describe(`side instance "${INSTANCE}"`, () => {
     await page.screenshot("06-finished");
   });
 
-  it("SessionEnd resets the session to the bare VS Code pill", async () => {
+  it("SessionEnd removes the session: the island has nothing left to show", async () => {
     const from = readSideLog().length;
     const run = await runHook("SessionEnd", base({ reason: "exit" }));
     expect(run).toMatchObject({ code: 0, stdout: "", stderr: "" });
     await waitForLog(/hook SessionEnd/, 5_000, from);
-    await page.waitForView("the session name to reset", (v) => v.who === "VS Code");
+    // The finished card is still up (it keeps its own copy of the session); the
+    // home view behind it is now the empty card.
+    await page.emit("tray", "open");
+    await page.waitForView("the empty card", (v) => v.text.includes("Nothing running right now."));
+  });
+
+  describe("several sessions at once", () => {
+    /** Each session's colour, as first seen: it must never change. */
+    const seen = new Map<string, string>();
+
+    /** Records the colours on screen, checks they never change and differ between sessions. */
+    function checkColours(o: Overview) {
+      const shown = [o.primary, o.second, ...o.panitas].filter((x) => x != null);
+      for (const { name, color } of shown) {
+        if (!seen.has(name)) seen.set(name, color);
+        expect(color, `${name}'s colour changed`).toBe(seen.get(name));
+      }
+      const colours = shown.map((x) => x.color);
+      expect(new Set(colours).size, `colours repeat: ${JSON.stringify(shown)}`).toBe(colours.length);
+    }
+
+    async function work(s: E2eSession, command: string) {
+      for (const [event, extra] of [
+        ["UserPromptSubmit", { prompt: `${s.name}: ${command}` }],
+        ["PreToolUse", { tool_name: "Bash", tool_input: { command } }],
+      ] as const) {
+        const run = await runHook(event, payloadOf(s, extra));
+        expect(run).toMatchObject({ code: 0, stdout: "", stderr: "" });
+      }
+    }
+
+    async function openIsland() {
+      await page.emit("tray", "open");
+      await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
+    }
+
+    const names = (o: Overview) => o.panitas.map((p) => p.name);
+    /** Longer than the right card is wide, on purpose. */
+    const SEXTO_COMMAND = "cargo test --workspace --all-features -- --nocapture";
+
+    it("two sessions: the newest on the left, the other one on the right", async () => {
+      await page.pointerAway();
+      await page.interceptOpens();
+      await work(S.panita, "npm test");
+      await work(S.struxto, "pytest -q");
+      const o = await page.waitForOverview(
+        "struxto on the left, panita on the right",
+        (o) => o.primary?.name === "struxto" && o.second?.name === "panita",
+      );
+      expect(o.second?.step).toBe("Ejecuta · npm test");
+      expect(o.panitas).toEqual([]);
+      // wsl_distro came through the real relay and stays with the session.
+      expect(o.primary?.title).toBe("/home/e2e/struxto (WSL · Ubuntu-24.04)");
+      checkColours(o);
+      await openIsland();
+      await page.screenshot("10-two-sessions");
+    });
+
+    it("three sessions: the third leads, the first becomes a panita", async () => {
+      await work(S.hekta, "make build");
+      const o = await page.waitForOverview(
+        "hekta, struxto, then the panita",
+        (o) => o.primary?.name === "hekta" && o.second?.name === "struxto" && names(o).join() === "panita",
+      );
+      expect(o.more).toBeNull();
+      checkColours(o);
+      await openIsland();
+      await page.screenshot("11-three-sessions");
+    });
+
+    it("six sessions: three panitas and a +1, in order of activity", async () => {
+      await work(S.datasci, "jupyter nbconvert --execute analysis.ipynb");
+      await work(S.personal, "git status");
+      await work(S.sexto, SEXTO_COMMAND);
+      const o = await page.waitForOverview(
+        "sexto, personal, then datasci hekta struxto +1",
+        (o) =>
+          o.primary?.name === "sexto" &&
+          o.second?.name === "personal" &&
+          names(o).join() === "datasci,hekta,struxto" &&
+          o.more === "+1",
+      );
+      checkColours(o);
+      // Six sessions, six colours (panita, behind the +1, was seen earlier).
+      expect(new Set(seen.values()).size).toBe(6);
+      await openIsland();
+      await page.screenshot("12-six-sessions");
+    });
+
+    it("a click on a panita puts that session on the left at once", async () => {
+      await page.clickPanita("hekta");
+      // Well under the 2 s dwell: a click does not wait for it.
+      const o = await page.waitForOverview(
+        "hekta on the left",
+        (o) => o.primary?.name === "hekta" && o.second?.name === "sexto",
+        1_500,
+      );
+      expect(names(o)).toEqual(["personal", "datasci", "struxto"]);
+      expect(o.more).toBe("+1");
+      checkColours(o);
+      // sexto's step is a long command: it ends in "…" inside the card rather
+      // than stretching the card past the island (it used to).
+      expect(o.second?.step).toBe(`Ejecuta · ${SEXTO_COMMAND.slice(0, 40)}`);
+      await openIsland();
+      expect((await page.overview()).fits).toBe(true);
+      await page.screenshot("13-panita-click");
+    });
+
+    it("each ↗ opens the session it sits on", async () => {
+      const before = (await page.opens()).length;
+      await page.clickOpen("primary");
+      await page.clickOpen("second");
+      const opens = (await page.opens()).slice(before);
+      expect(opens).toEqual([
+        { cmd: "open_in_vscode", args: { path: S.hekta.cwd } },
+        { cmd: "open_in_vscode", args: { path: S.sexto.cwd } },
+      ]);
+    });
+
+    it("the approval card names the session asking; Allow still answers exactly", async () => {
+      const from = readSideLog().length;
+      const hook = runHook("PermissionRequest", askFrom(S.datasci, "rm -rf ./datasci-build"));
+      const card = await page.waitForApproval("Bash · rm -rf ./datasci-build");
+      expect(card.who).toBe("datasci");
+      expect(card.whoColor).toBe(seen.get("datasci"));
+      await waitForLog(/hook PermissionRequest id=(\S+)/, 5_000, from);
+      await page.screenshot("14-approval-session");
+
+      await page.click("Allow");
+      const run = await hook;
+      expect(run.stdout).toBe(ALLOW_JSON);
+      expect(run).toMatchObject({ code: 0, stderr: "" });
+      // The answered session is on the left card of the overview the user lands on.
+      await page.waitForView("the card to close", (v) => v.code === null);
+      await page.waitForOverview("datasci on the left", (o) => o.primary?.name === "datasci", 1_500);
+    });
+
+    it("another session's request while a card is up is declined, and that session badged", async () => {
+      const from = readSideLog().length;
+      const first = runHook("PermissionRequest", askFrom(S.struxto, "rm -rf ./struxto-cache"));
+      await page.waitForApproval("Bash · rm -rf ./struxto-cache");
+
+      const second = await runHook("PermissionRequest", askFrom(S.personal, "git push --force"));
+      expect(second).toMatchObject({ code: 0, stdout: "", stderr: "" });
+      expect(second.ms).toBeLessThan(QUICK_MS);
+      const [, secondId] = await waitForLog(/decline id=(\S+)/, 5_000, from);
+      await waitForLog(new RegExp(`hook id=${secondId} not shown`), 5_000, from);
+
+      // The first card is untouched and still names its own session.
+      const card = await page.activeView();
+      expect(card?.code).toBe("Bash · rm -rf ./struxto-cache");
+      expect(card?.who).toBe("struxto");
+      await page.screenshot("14b-second-request-declined");
+
+      await page.click("Deny");
+      expect((await first).stdout).toBe(DENY_JSON);
+      await page.waitForView("the card to close", (v) => v.code === null);
+      // Back on the overview: personal asks in its terminal now, and says so.
+      const o = await page.waitForOverview("personal's badge", (o) =>
+        [o.second, ...o.panitas].some((p) => p?.name === "personal" && p.badge === "approval"),
+      );
+      expect(o.primary?.name).toBe("struxto");
+    });
+
+    it("Stop opens the finished card naming that session; Open terminal opens it", async () => {
+      // panita is behind the +1 at this point: the card is about it all the same.
+      const run = await runHook("Stop", payloadOf(S.panita, { stop_hook_active: false }));
+      expect(run).toMatchObject({ code: 0, stdout: "", stderr: "" });
+      const view = await page.waitForView("panita's finished card", (v) => v.text.includes("Claude Code finished"));
+      expect(view.who).toBe("panita");
+      expect(view.whoColor).toBe(seen.get("panita"));
+      expect(view.buttons).toEqual(["Open terminal", "OK"]);
+      await page.screenshot("15-finished-session");
+
+      const before = (await page.opens()).length;
+      await page.click("Open terminal");
+      expect((await page.opens()).slice(before)).toEqual([{ cmd: "open_in_vscode", args: { path: S.panita.cwd } }]);
+    });
+
+    it("the compact island shows the other sessions in their colours", async () => {
+      await page.click("OK");
+      await waitFor("the compact island", async () => (await page.settle()).width === SIZES.compact.width);
+      const grid = await page.compact();
+      // Six sessions: the leader is the big Mochi, five others → three minis and a +2.
+      expect(grid.minis).toHaveLength(3);
+      expect(grid.more).toBe("+2");
+      const colourOf = new Map(Object.values(S).map((s) => [`session:${s.id}`, seen.get(s.name)]));
+      for (const mini of grid.minis) expect(mini.color, mini.id).toBe(colourOf.get(mini.id));
+      await page.screenshot("16-compact");
+    });
+
+    it("SessionEnd takes a session off; the last one alone, then nothing", async () => {
+      await openIsland(); // back to the overview from the compact island
+      const order = Object.values(S);
+      for (const [i, s] of order.entries()) {
+        const run = await runHook("SessionEnd", payloadOf(s, { reason: "exit" }));
+        expect(run).toMatchObject({ code: 0, stdout: "", stderr: "" });
+        const left = order.slice(i + 1).map((x) => x.name);
+        // With nobody left the overview gives way to the empty card (below), and
+        // a view off screen is not redrawn.
+        if (left.length === 0) break;
+        const o = await page.waitForOverview(`${s.name} to be gone`, (o) => {
+          const shown = [o.primary?.name, o.second?.name, ...names(o)].filter(Boolean) as string[];
+          return !shown.includes(s.name) && shown.every((n) => left.includes(n));
+        });
+        if (left.length > 0) checkColours(o);
+        if (left.length === 1) {
+          expect(o.primary?.name).toBe(left[0]);
+          expect(o.second).toBeNull();
+          expect(o.quiet).toBe("No other sessions");
+          await openIsland();
+          await page.screenshot("17-one-session");
+        }
+      }
+      await page.waitForView("the empty card", (v) => v.text.includes("Nothing running right now."));
+    });
   });
 
   it.runIf(SLOW)("an unanswered card times out with empty stdout (COUCOU_E2E_SLOW=1, ~2 min)", async () => {

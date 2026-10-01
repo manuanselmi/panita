@@ -7,7 +7,7 @@ the fourth moves the mouse and is opt-in.
 | Layer | Command | What it covers | Time |
 |---|---|---|---|
 | Rust unit tests | `npm run test:rust` | Relay output JSON, instance names, pipe naming, the permission decision path, settings.json merging, file ingest | ~1 min cold, seconds warm |
-| TypeScript unit tests | `npm run test:unit` | `hooks.ts` (step labels, approval target, every hook event → `State`), `state.ts` (pills, 4-integration cap, focus, default view); type-checks the tests | seconds |
+| TypeScript unit tests | `npm run test:unit` | `hooks.ts` (step labels, approval target, every hook event → its session, several sessions at once, where each "Open" goes), `state.ts` + `sessions.ts` (session creation, order and its dwell, approval and click promotion, `SessionEnd` and expiry, colours, panitas and "+N", integrations after the sessions, default view); type-checks the tests | seconds |
 | End to end | `npm run test:e2e` | The real `coucou-hook.exe` → named pipe → the real app → the island webview and back, driven over CDP | ~3–5 min cold, ~1 min warm |
 | Real input | `npm run test:input` | Hover-to-reveal, a real click not stealing the foreground. **Moves the mouse** — see below | ~2 min |
 
@@ -120,7 +120,8 @@ What it does, in order:
    island's DOM:
    - `UserPromptSubmit`, `PreToolUse`, `PostToolUse` — logged in order, the
      overview names the session after its folder, the ticker shows
-     `Exécute · echo hello-e2e`; each relay run exits 0 with empty stdout;
+     `Ejecuta · echo hello-e2e`; each relay run exits 0 with empty stdout;
+   - the ticker's visible rows never overlap, and it keeps up past twenty steps;
    - `PermissionRequest` → **Allow** (an `element.click()` on the button, not a
      mouse click) → the relay's stdout is exactly the documented
      `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`;
@@ -132,8 +133,27 @@ What it does, in order:
      that appears once it recovers answers nobody;
    - a paused island (the tray's Pause, sent as the same `tray` event) →
      declined at once;
-   - `Stop` → the finished card; `SessionEnd` → the session resets;
+   - `Stop` → the finished card; `SessionEnd` → the session is gone;
+   - **several sessions at once** (six, one of them in WSL): who is on the left
+     card, the second session on the right, the panitas and their "+1", in
+     order of activity; each session's colour never changes and no two are
+     alike; `wsl_distro` survives the relay; a click on a panita takes the left
+     card at once; each ↗ and "Open terminal" opens the session it belongs to;
+     the approval card names the session asking (and its colour) and Allow /
+     Deny still answer exactly; another session's request meanwhile is
+     declined and that session badged; the compact island's minis; `SessionEnd`
+     one by one down to the empty card;
    - no uncaught exception in the island.
+
+   Two things the multi-session tests do to the page, both DOM-level: they
+   record and swallow every `open_*` command the page sends, so clicking "Open"
+   opens no VS Code or Explorer window. Tauri's `invoke` is read-only, so this
+   patches `fetch`, its IPC transport, and a probe command proves the patch
+   right before every such click — if it does not hold, the click is refused.
+   And they send the island one `cursor` event far off-screen,
+   because the session order holds still while the pointer is on the open
+   island. The Rust cursor poll only speaks when the real mouse moves, so that
+   holds unless someone moves the mouse over the island during the run.
 5. **Quits the app** the way the tray's Quit does (so its tray icon goes away),
    force-kills only if that fails, waits for its WebView2 processes, and
    deletes `%LOCALAPPDATA%\Coucou-e2e`, `%APPDATA%\Coucou-e2e` and
@@ -145,7 +165,8 @@ What it does, in order:
 
 The suite uses its own instance name, `e2e`, rather than `dev`, because it wipes
 its instance's folders before and after every run; a hand-run `dev` instance and
-its settings are never touched. (`COUCOU_E2E_INSTANCE` overrides the name.)
+its settings are never touched. (`COUCOU_E2E_INSTANCE` overrides the name.) Its
+settings are muted, with no integration switched on — the shipped default.
 
 Output lands in `test-results/e2e/` (git-ignored): screenshots of the island at
 each step (transparent PNGs of the 720×320 window), `app-output.log`,
