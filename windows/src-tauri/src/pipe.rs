@@ -219,10 +219,82 @@ pub fn decline(app: &AppHandle, request_id: &str) {
 /// Called by the island's Allow / Deny buttons. Only ever a bare word: turning
 /// it into Claude Code's JSON is coucou-hook's job.
 pub fn answer(app: &AppHandle, request_id: &str, decision: &str) {
-    let word = match decision {
-        "allow" | "always" => "allow",
-        _ => "deny",
-    };
+    let word = decision_word(decision);
     log::line(format!("decision id={request_id} {word}"));
     send(app, request_id, Reply::Decision(word.to_string()), false);
+}
+
+/// What goes back down the pipe. Anything that is not an explicit allow is a
+/// deny: a typo or a new button must never turn into a permission.
+fn decision_word(decision: &str) -> &'static str {
+    match decision {
+        "allow" | "always" => "allow",
+        _ => "deny",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_an_explicit_allow_allows() {
+        assert_eq!(decision_word("allow"), "allow");
+        assert_eq!(decision_word("always"), "allow");
+        for other in ["deny", "", "Allow", "ALLOW", " allow", "yes", "allow\n"] {
+            assert_eq!(decision_word(other), "deny", "{other:?} must deny");
+        }
+    }
+
+    /// `wait_for_decision` on a current-thread runtime, with the replies queued
+    /// up front (as many as the channel holds) and the sender then dropped.
+    fn decide(replies: Vec<Reply>) -> Option<String> {
+        let (tx, mut rx) = mpsc::channel::<Reply>(4);
+        for reply in replies {
+            tx.try_send(reply).ok().expect("channel full");
+        }
+        drop(tx);
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(wait_for_decision("test", &mut rx))
+    }
+
+    #[test]
+    fn an_acknowledged_card_returns_the_click() {
+        assert_eq!(decide(vec![Reply::Ack, Reply::Decision("allow".into())]).as_deref(), Some("allow"));
+        assert_eq!(decide(vec![Reply::Ack, Reply::Decision("deny".into())]).as_deref(), Some("deny"));
+    }
+
+    #[test]
+    fn a_click_that_beats_the_ack_still_counts() {
+        assert_eq!(decide(vec![Reply::Decision("allow".into())]).as_deref(), Some("allow"));
+    }
+
+    #[test]
+    fn a_decline_or_a_vanished_island_means_no_answer() {
+        assert_eq!(decide(vec![Reply::Decline]), None);
+        assert_eq!(decide(vec![Reply::Ack, Reply::Decline]), None);
+        // Island acked, then the sender went away without a decision.
+        assert_eq!(decide(vec![Reply::Ack]), None);
+        // Nothing at all.
+        assert_eq!(decide(vec![]), None);
+    }
+
+    #[test]
+    fn an_island_that_never_acks_releases_the_relay_quickly() {
+        // Keep the sender alive so only the ack timeout can end the wait.
+        let (_tx, mut rx) = mpsc::channel::<Reply>(4);
+        let started = std::time::Instant::now();
+        let answer = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(wait_for_decision("test", &mut rx));
+        assert_eq!(answer, None);
+        let waited = started.elapsed();
+        assert!(waited >= ACK_TIMEOUT, "gave up before the ack window closed: {waited:?}");
+        assert!(waited < ACK_TIMEOUT + Duration::from_secs(2), "held the relay for {waited:?}");
+    }
 }
