@@ -13,7 +13,16 @@
 //!   island is the whole point. No answer means empty stdout, and Claude Code
 //!   asks in the terminal exactly as if Coucou were not installed.
 //!
-//! Usage: `coucou-hook <EventName>` (the name is also read from the JSON).
+//! Usage: `coucou-hook <EventName> [--wsl-distro <name>]` (the event name is
+//! also read from the JSON).
+//!
+//! `--wsl-distro` is how a Claude Code session running *inside WSL* says so: the
+//! hook command installed in a distro's `~/.claude/settings.json` ends with
+//! `--wsl-distro "$WSL_DISTRO_NAME"`, which the Linux shell expands before this
+//! Windows executable starts. It has to be an argument: WSL interop hands a
+//! Windows process only the Linux variables listed in `WSLENV`, so the relay
+//! cannot read `$WSL_DISTRO_NAME` itself. It is forwarded as `wsl_distro`;
+//! Windows sessions have no such field.
 //!
 //! With `COUCOU_INSTANCE=<name>` in the environment the relay talks to that
 //! side instance instead of the real app — see instance.rs.
@@ -82,7 +91,10 @@ fn main() {
     if instance::current().is_err() {
         std::process::exit(0);
     }
-    let Some((payload, event)) = read_event() else { std::process::exit(0) };
+    // args_os, not args: `std::env::args` panics on an argument that is not
+    // valid Unicode, and a panic here is a failed hook in Claude Code.
+    let args = parse_args(std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()));
+    let Some((payload, event)) = read_event(&args) else { std::process::exit(0) };
 
     let waits_for_answer = event == "PermissionRequest";
     let budget = if waits_for_answer { DECISION_BUDGET } else { FIRE_AND_FORGET_BUDGET };
@@ -123,12 +135,74 @@ fn decision_json(decision: &str) -> Option<String> {
     ))
 }
 
+/// What the hook command line says, beyond the JSON on stdin.
+#[derive(Debug, Default, PartialEq)]
+struct Args {
+    /// The first positional argument — `argv[1]` in every command Coucou writes.
+    event: String,
+    /// `--wsl-distro <name>`: the session runs inside this WSL distro. `None`
+    /// for a Windows session, and also when the value is empty — an unset
+    /// `$WSL_DISTRO_NAME` must read as "not WSL", never as a distro called "".
+    wsl_distro: Option<String>,
+}
+
+/// Parses the arguments after the program name. Never fails: a hook must not
+/// break Claude Code over a command line it does not fully understand, so
+/// anything unexpected is simply ignored.
+///
+/// The event is the first argument that is not `--wsl-distro` or its value,
+/// which keeps `coucou-hook <EventName>` — the only shape written before this
+/// flag existed — exactly as it was: the event is `argv[1]`, whatever it says.
+fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
+    const FLAG: &str = "--wsl-distro";
+    let mut parsed = Args::default();
+    let mut event: Option<String> = None;
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
+        let value = if arg == FLAG {
+            // A flag with nothing after it (an unquoted, empty variable) says nothing.
+            Some(iter.next().unwrap_or_default())
+        } else {
+            arg.strip_prefix(FLAG).and_then(|rest| rest.strip_prefix('=')).map(str::to_string)
+        };
+        match value {
+            Some(name) => {
+                let name = name.trim();
+                parsed.wsl_distro = (!name.is_empty()).then(|| name.to_string());
+            }
+            None => {
+                if event.is_none() {
+                    event = Some(arg);
+                }
+            }
+        }
+    }
+    parsed.event = event.unwrap_or_default();
+    parsed
+}
+
 /// Reads stdin and returns the payload to forward plus the event name.
-fn read_event() -> Option<(String, String)> {
+fn read_event(args: &Args) -> Option<(String, String)> {
     let mut raw = Vec::new();
     if std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
         return None;
     }
+    build_payload(
+        raw,
+        args,
+        |var| std::env::var(var).ok(),
+        || std::env::current_dir().ok().map(|cwd| cwd.to_string_lossy().to_string()),
+    )
+}
+
+/// The JSON line forwarded to Coucou, plus the event name. Pure apart from the
+/// two lookups it is handed, so it can be tested without a console or a pipe.
+fn build_payload(
+    mut raw: Vec<u8>,
+    args: &Args,
+    env: impl Fn(&str) -> Option<String>,
+    current_dir: impl FnOnce() -> Option<String>,
+) -> Option<(String, String)> {
     // Some shells hand us a UTF-8 BOM; serde_json would choke on it.
     if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
         raw.drain(..3);
@@ -139,13 +213,12 @@ fn read_event() -> Option<(String, String)> {
 
     // The event name is passed as argv[1] by the hook command; the JSON usually
     // carries it too. Trust argv when the JSON is missing it.
-    let arg_event = std::env::args().nth(1).unwrap_or_default();
     let event = map
         .get("hook_event_name")
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .filter(|s| !s.is_empty())
-        .unwrap_or(arg_event);
+        .unwrap_or_else(|| args.event.clone());
     map.insert("hook_event_name".into(), serde_json::Value::String(event.clone()));
 
     for field in DROPPED_FIELDS {
@@ -158,11 +231,8 @@ fn read_event() -> Option<(String, String)> {
         .map(str::is_empty)
         .unwrap_or(true);
     if cwd_missing {
-        if let Ok(cwd) = std::env::current_dir() {
-            map.insert(
-                "cwd".into(),
-                serde_json::Value::String(cwd.to_string_lossy().to_string()),
-            );
+        if let Some(cwd) = current_dir() {
+            map.insert("cwd".into(), serde_json::Value::String(cwd));
         }
     }
 
@@ -176,9 +246,15 @@ fn read_event() -> Option<(String, String)> {
         ("session_pid", "CLAUDE_CODE_SSE_PORT"),
     ] {
         if !map.contains_key(key) {
-            let value = std::env::var(var).unwrap_or_default();
+            let value = env(var).unwrap_or_default();
             map.insert(key.into(), serde_json::Value::String(value));
         }
+    }
+
+    // A WSL session: the cwd above is a Linux path, and the island needs the
+    // distro to find (or open) the right VS Code window. Absent otherwise.
+    if let Some(distro) = &args.wsl_distro {
+        map.insert("wsl_distro".into(), serde_json::Value::String(distro.clone()));
     }
 
     truncate_strings(&mut payload);
@@ -263,6 +339,86 @@ mod tests {
         assert!(decision_json("maybe").is_none());
         // The shape the app used to send must not be mistaken for a decision.
         assert!(decision_json(r#"{"permissionDecision":"allow"}"#).is_none());
+    }
+
+    fn args(list: &[&str]) -> Args {
+        parse_args(list.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn the_event_is_still_the_first_argument() {
+        // The only shape written before --wsl-distro existed.
+        assert_eq!(args(&["PreToolUse"]), Args { event: "PreToolUse".into(), wsl_distro: None });
+        assert_eq!(args(&[]), Args::default());
+        // argv[1] is the event whatever it says, exactly as before.
+        assert_eq!(args(&["--something", "PreToolUse"]).event, "--something");
+        assert_eq!(args(&["PreToolUse", "extra"]).event, "PreToolUse");
+    }
+
+    #[test]
+    fn wsl_distro_is_read_in_both_spellings_and_anywhere() {
+        let want = Args { event: "PreToolUse".into(), wsl_distro: Some("Ubuntu-24.04".into()) };
+        // What Coucou writes into a distro's settings.json, once the shell has expanded it.
+        assert_eq!(args(&["PreToolUse", "--wsl-distro", "Ubuntu-24.04"]), want);
+        assert_eq!(args(&["PreToolUse", "--wsl-distro=Ubuntu-24.04"]), want);
+        assert_eq!(args(&["--wsl-distro", "Ubuntu-24.04", "PreToolUse"]), want);
+        assert_eq!(args(&["PreToolUse", "--wsl-distro", "  Ubuntu-24.04 "]), want);
+    }
+
+    #[test]
+    fn an_empty_or_missing_distro_means_a_windows_session() {
+        for list in [
+            &["PreToolUse", "--wsl-distro", ""][..],   // "$WSL_DISTRO_NAME" unset, quoted
+            &["PreToolUse", "--wsl-distro"][..],       // unset and unquoted: the flag alone
+            &["PreToolUse", "--wsl-distro="][..],
+            &["PreToolUse", "--wsl-distro", "   "][..],
+        ] {
+            assert_eq!(args(list), Args { event: "PreToolUse".into(), wsl_distro: None }, "{list:?}");
+        }
+        // A look-alike flag is not the flag.
+        assert_eq!(args(&["PreToolUse", "--wsl-distroX"]).wsl_distro, None);
+    }
+
+    fn payload(json: &str, a: &Args) -> serde_json::Value {
+        let env = |var: &str| (var == "TERM_PROGRAM").then(|| "vscode".to_string());
+        let (line, _) = build_payload(json.as_bytes().to_vec(), a, env, || Some(r"C:\fallback".into())).unwrap();
+        assert!(line.ends_with('\n'));
+        serde_json::from_str(&line).unwrap()
+    }
+
+    #[test]
+    fn a_wsl_session_forwards_its_distro_and_a_windows_session_does_not() {
+        let json = r#"{"hook_event_name":"PreToolUse","cwd":"/home/u/proj","tool_response":"big"}"#;
+        let wsl = payload(json, &args(&["PreToolUse", "--wsl-distro", "Ubuntu-24.04"]));
+        assert_eq!(wsl["wsl_distro"], "Ubuntu-24.04");
+        assert_eq!(wsl["cwd"], "/home/u/proj");
+
+        let windows = payload(json, &args(&["PreToolUse"]));
+        assert!(windows.get("wsl_distro").is_none(), "a Windows session must not carry wsl_distro");
+        // Everything else is as before, for both.
+        for v in [&wsl, &windows] {
+            assert_eq!(v["hook_event_name"], "PreToolUse");
+            assert!(v.get("tool_response").is_none());
+            assert_eq!(v["term_program"], "vscode");
+            assert_eq!(v["vscode_pid"], "");
+        }
+    }
+
+    #[test]
+    fn payload_building_keeps_its_old_rules() {
+        // The event comes from the JSON when it has one, from argv otherwise.
+        let from_json = payload(r#"{"hook_event_name":"Stop"}"#, &args(&["PreToolUse"]));
+        assert_eq!(from_json["hook_event_name"], "Stop");
+        let from_argv = payload(r#"{"hook_event_name":""}"#, &args(&["PreToolUse"]));
+        assert_eq!(from_argv["hook_event_name"], "PreToolUse");
+        // A missing cwd falls back to the process's own.
+        assert_eq!(from_argv["cwd"], r"C:\fallback");
+        // A BOM is not an error; anything that is not an object is dropped.
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend_from_slice(br#"{"cwd":"C:\\x"}"#);
+        assert!(build_payload(bom, &args(&["Stop"]), |_| None, || None).is_some());
+        assert!(build_payload(b"[1]".to_vec(), &args(&["Stop"]), |_| None, || None).is_none());
+        assert!(build_payload(b"not json".to_vec(), &args(&["Stop"]), |_| None, || None).is_none());
     }
 
     #[test]
