@@ -46,11 +46,11 @@ Lo que el fork agregó sobre upstream (detalle y porqués en `memoria/decisiones
 
 | Qué | Dónde | Estado |
 |---|---|---|
-| App | `%LOCALAPPDATA%\Coucou\` (instalador NSIS por usuario, sin admin) | Instalada desde `main` `c4c6583` |
+| App | `%LOCALAPPDATA%\Coucou\` (instalador NSIS por usuario, sin admin) | Instalada desde `main` `39521bb` |
 | Hooks Windows | `%USERPROFILE%\.claude\settings.json` | Instalados (relay en `%LOCALAPPDATA%\Coucou\bin`) |
 | Hooks WSL | `~/.claude/settings.json` de `Ubuntu-24.04` | Instalados, con `--wsl-ppid` |
 | Extensión VS Code | `coucou.terminal-focus` 0.1.0 | Instalada (por CLI) |
-| Chat de la isla | requiere API key de Anthropic | No configurado, a propósito (D-013) |
+| Chat de la isla | hoy requiere API key de Anthropic | En diseño: correrá Claude Code restringido (D-016) |
 
 ## Estructura del repo
 
@@ -179,8 +179,10 @@ Nunca se sube de categoría sin evidencia, y al subir se anota cómo y cuándo.
 5. **No publicar el fork ni builds** con el nombre Coucou o Mochi, el personaje, los íconos o
    los sonidos del autor (`LICENSE-ASSETS.md`). Privado está permitido. Para publicar hace
    falta identidad propia (pregunta N1).
-6. **No usar el login de la suscripción de Claude para el chat de la isla.** La app usa la API
-   con API key; el login de la suscripción no está permitido en apps de terceros (D-013).
+6. **La app nunca lee, guarda ni usa credenciales de la suscripción de Claude.** El chat de la
+   isla corre el `claude` oficial instalado en la PC, que maneja su propio login, en modo
+   restringido y de solo lectura (D-016, que supera a D-013). Nada de llamar a la API con el
+   token de la suscripción ni de sacarlo de donde Claude Code lo guarda.
 7. **No cerrar una decisión estructural sin mostrar 2–3 opciones con sus trade-offs.** Manuel
    decide; vos recomendás.
 8. **No reabrir lo descartado en `memoria/decisiones.md` sin un dato nuevo**, y no borrar

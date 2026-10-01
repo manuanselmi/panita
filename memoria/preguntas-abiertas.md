@@ -43,6 +43,21 @@ Con el orden por actividad (D-004) la sesión clickeada se va cuando otra hace a
 2 s. Si en el uso real molesta, la alternativa es fijarla hasta otro click o hasta que pida algo.
 Desbloquea: posible ajuste a D-004.
 
+### C1. ¿Dónde vive la carpeta hub del chat y qué dice su `CLAUDE.md`? (D-016)
+Un repo aparte en esta PC, con un `CLAUDE.md` que describa los proyectos de Manuel y apunte a sus
+`CLAUDE.md` y `memoria/`. Falta elegir ruta (¿`C:\Users\manua\Documents\GitHub\hub`?), qué
+repos se le abren con `--add-dir` (¿todo `GitHub\`? ¿solo algunos?) y si el `CLAUDE.md` de
+usuario de Manuel (sus preferencias de tono) también se le pasa. Desbloquea: implementar D-016.
+
+### C2. ¿Con qué modelo chatea la isla? (D-016)
+Por defecto Claude Code usa el de la cuenta (`claude-opus-5-5`, ~2 s por respuesta corta en el
+proceso vivo). Uno más rápido abarata los límites compartidos con las sesiones de código.
+Settings ya tiene un campo `model` (era para la API). Desbloquea: el default.
+
+### C3. ¿Puede el chat leer proyectos que viven dentro de WSL? (D-016)
+El proceso corre en Windows; las rutas `\\wsl.localhost\Ubuntu-24.04\…` en `--add-dir` no se
+probaron. La mayoría de los repos están del lado Windows (`Documents\GitHub`). `[A VERIFICAR]`
+
 ## 🟢 Operativas — para el día a día
 
 ### O1. ¿Anda el botón Install/Update de la extensión en Settings con un click real?

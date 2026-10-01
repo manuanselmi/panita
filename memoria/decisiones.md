@@ -250,7 +250,7 @@ La traducción del resto queda abierta (pregunta I3).
 
 ## D-013 — El chat de la isla no se configura
 
-**Fecha:** 2026-09-30 · **Estado:** vigente
+**Fecha:** 2026-09-30 · **Estado:** superada por D-016
 
 **Contexto.** El chat y las preguntas sobre archivos llaman a la API de Anthropic con API key
 (pago por uso, aparte de la suscripción). Ver sesiones y aprobar permisos no la necesita.
@@ -316,3 +316,80 @@ interferiría con pestañas y barras de título de otras apps.
 **Consecuencias.** Se aparta otra vez del diseño original (la isla del Mac vive en el notch y no
 se mueve). El doble click no pliega la isla con una tarjeta de permiso esperando (misma regla que
 `Esc`): plegada, nadie podría contestarla hasta que el relay se rinda.
+
+## D-016 — El chat de la isla corre Claude Code (el `claude` oficial), vivo, restringido y de solo lectura
+
+**Fecha:** 2026-10-01 · **Estado:** vigente · **Supera a:** D-013
+
+**Contexto.** D-013 dejó el chat sin configurar: la app solo sabe hablar con la API con API key
+(pago aparte) y se descartó usar la suscripción. Manuel quiere chatear desde la isla con un
+Claude que conozca sus proyectos, y usa Claude Code con su suscripción todo el día. El dato nuevo
+que reabre D-013: la app no necesita tocar ninguna credencial; puede lanzar el `claude` oficial
+que ya está instalado (2.1.287 en Windows, `~/.local/bin/claude.exe`) en modo sin interfaz y
+mostrar sus respuestas. El que habla con Anthropic es Claude Code, con su propio login.
+
+**Política.** Lo único explícito en la documentación es: *"Unless previously approved, Anthropic
+does not allow third party developers to offer claude.ai login or rate limits for their products,
+including agents built on the Claude Agent SDK."*
+(https://code.claude.com/docs/en/agent-sdk/overview.md, `[REPORTADO]` por la consulta a la doc del
+2026-10-01). Apunta a desarrolladores que ofrecen el login de la suscripción en su producto. Este
+caso — una app privada que corre el CLI oficial en la PC de su dueño, para él — no aparece ni
+permitido ni prohibido. `[SUPUESTO]`: está dentro del uso personal de Claude Code en modo `-p`,
+que existe para scripts. Manuel lo aceptó sabiendo que no es explícito. Si la app se publicara
+algún día (N1), esto se revisa.
+
+**Opciones que se mostraron.**
+- **A. Chat en la isla vía `claude -p`** — elegida, en su variante de proceso vivo.
+- **B. "Ask" abre una terminal de VS Code con `claude` en la carpeta hub.** Sin gris de política
+  y con Claude Code completo, pero el chat no vive en la isla. Descartada: Manuel quiere el chat
+  en la isla.
+- **C. Seguir con la API key (D-013).** Pago aparte y sin contexto de los proyectos.
+- Dentro de A: **un proceso por mensaje** (`--resume` cada vez: ~4 s de arranque en cada
+  mensaje) contra **un proceso vivo** alimentado por stdin. Elegido el vivo.
+
+**Decisión.**
+- **Un solo proceso de chat para toda la app.** Arranca con el primer mensaje (no al abrir
+  Coucou: no ocupa memoria si no se chatea), queda vivo entre mensajes, "+" empieza una
+  conversación nueva (cierra el proceso y arranca otro con otro id), Quit lo cierra. Si se cae
+  (una actualización de Claude Code, un error), la app lo relanza con `--resume <id>` y la
+  conversación sigue.
+- **La app elige el id** (`--session-id <uuid>`), así sabe de antemano qué sesión es la suya.
+- **Restringido y de solo lectura:** `--restricted` (sin herramientas que ejecutan comandos,
+  archivos limitados a la carpeta de trabajo y a los `--add-dir`, ignora los settings de usuario,
+  proyecto y local — y con ellos los hooks —, rechaza `bypassPermissions`), `--strict-mcp-config`
+  (sin conectores de claude.ai), `--permission-mode dontAsk` y `--permission-prompts none` (lo
+  que pediría permiso se niega solo: nada se aprueba sin un click de Manuel, porque no se aprueba
+  nada), y la lista de herramientas acotada a leer y buscar (Read, Glob, Grep, WebSearch,
+  WebFetch).
+- **Contexto:** el proceso corre en una carpeta "hub" — un repo aparte, a definir, con un
+  `CLAUDE.md` que describe los proyectos de Manuel —, que se le pasa explícitamente con
+  `--append-system-prompt-file`, y los repos de los proyectos con `--add-dir`.
+- **La app nunca lee ni guarda credenciales de Claude Code.** El camino con API key puede quedar
+  como alternativa; se decide al implementar.
+
+**Evidencia — prueba del 2026-10-01** (`claude` 2.1.287, modelo por defecto `claude-opus-5-5`,
+suscripción de Manuel; carpeta hub de juguete con un `CLAUDE.md` con una palabra clave):
+- `[CONFIRMADO]` El proceso vivo anda: una línea por mensaje en stdin,
+  `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"…"}]}}`, y en stdout
+  los eventos `system/init`, `assistant`, `result` de `--output-format stream-json --verbose`.
+  Al cerrar stdin el proceso sale con código 0.
+- `[CONFIRMADO]` Tiempos: arranque hasta `init` ~1,4 s; primer mensaje 7,6 s (el modelo hizo
+  dos lecturas de archivo); **segundo mensaje en el mismo proceso 2,1 s**; reanudar con
+  `--resume` en un proceso nuevo 3,7 s; un `-p` suelto sin herramientas 4,4–5,9 s.
+- `[CONFIRMADO]` Memoria del proceso vivo: ~220 MB (los Claude Code interactivos de Manuel, con
+  horas de uso: ~350 MB).
+- `[CONFIRMADO]` La conversación sigue entre mensajes del mismo proceso y después de `--resume`.
+- `[CONFIRMADO]` Con `--restricted` (y también con `--setting-sources project,local`) no se
+  disparó ningún hook de Coucou: el log real no tuvo ninguna línea de esas sesiones.
+- `[CONFIRMADO]` **`--restricted` no carga el `CLAUDE.md` solo** (el modelo contestó que no lo
+  tenía, y en la primera prueba lo buscó con Glob y Read); con
+  `--append-system-prompt-file CLAUDE.md` sí lo tiene.
+- `[CONFIRMADO]` Sin `--tools`, el modo restringido igual ofrece Edit, Write, NotebookEdit, Task,
+  Cron*, ScheduleWakeup, SendMessage, EnterWorktree y otras: por eso la lista acotada.
+- El costo que informa cada respuesta (~0,05 USD por turno con Opus) es una estimación del
+  cliente; con la suscripción no se cobra aparte, pero cuenta contra sus límites, compartidos con
+  las sesiones de código de Manuel.
+
+**Consecuencias.** La regla 6 de `CLAUDE.md` cambia: lo prohibido es que la app use o guarde
+credenciales de la suscripción, no que corra el CLI oficial. Quedan para la implementación las
+preguntas C1–C3 de `preguntas-abiertas.md` (la carpeta hub, el modelo, los proyectos en WSL).
