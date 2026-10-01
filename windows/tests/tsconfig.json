@@ -1,18 +1,7 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
-    "types": [
-      "node",
-      "vite/client"
-    ]
+    "types": ["node", "vite/client"]
   },
-  "include": [
-    "**/*.ts",
-    "../src",
-    "../vitest.config.ts",
-    "../vitest.e2e.config.ts"
-  ],
-  "exclude": [
-    "input"
-  ]
+  "include": ["**/*.ts", "../src", "../vitest.config.ts", "../vitest.e2e.config.ts", "../vitest.input.config.ts"]
 }
