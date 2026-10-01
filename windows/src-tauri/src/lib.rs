@@ -13,6 +13,7 @@ mod pipe;
 mod secrets;
 mod settings;
 mod tray;
+mod vscode;
 mod win_user;
 mod wsl;
 
@@ -159,10 +160,19 @@ fn open_in_vscode(path: Option<String>) -> bool {
     false
 }
 
+/// "Open" for a Claude Code session: brings its existing VS Code window to the
+/// front — on whichever virtual desktop it is — and only opens the folder when
+/// no window has it (see vscode.rs). `wsl_distro` is the `wsl_distro` field the
+/// relay forwards for sessions running inside WSL; `cwd` is then a Linux path.
+#[tauri::command]
+async fn open_session(cwd: Option<String>, wsl_distro: Option<String>) -> Result<vscode::Outcome, String> {
+    off_main_thread(move || vscode::open_session(cwd, wsl_distro)).await
+}
+
 /// Our own `where`: walks %PATH% against %PATHEXT%, no shell involved.
 /// Rust quotes arguments correctly for `.cmd`/`.bat` targets since 1.77, so
 /// spawning `code.cmd` directly is safe.
-fn find_on_path(stem: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn find_on_path(stem: &str) -> Option<std::path::PathBuf> {
     let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
     let dirs = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&dirs) {
@@ -469,6 +479,7 @@ pub fn run() {
             reposition,
             open_url,
             open_in_vscode,
+            open_session,
             quit_app,
             hooks_targets,
             hooks_status,

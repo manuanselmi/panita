@@ -53,6 +53,17 @@ export const Bridge = {
   /** "Open terminal" → opens the folder in VS Code when `code` is on PATH. */
   openInVSCode: (path: string | null) => call<boolean>("open_in_vscode", { path }),
 
+  /**
+   * "Open" for a Claude Code session: brings the VS Code window it lives in to
+   * the front — restoring it, switching virtual desktop if it is on another
+   * one — and only opens the folder when no window has it (`code <cwd>`, or the
+   * WSL remote URI; Explorer without `code`). `cwd` and `wslDistro` are the
+   * hook payload's `cwd` and `wsl_distro` (null for a Windows session; `cwd` is
+   * then a Linux path). Never throws: anything that goes wrong is "failed".
+   */
+  openSession: async (cwd: string | null, wslDistro: string | null): Promise<OpenSessionResult> =>
+    (await call<OpenSessionResult>("open_session", { cwd, wslDistro })) ?? "failed",
+
   quit: () => call<void>("quit_app"),
 
   openSettingsWindow: () => call<void>("open_settings_window"),
@@ -107,6 +118,15 @@ export const Bridge = {
   /** Tray → Pause. Stops the integration pollers, not just the island. */
   setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
 };
+
+/**
+ * - `focused`: an existing VS Code window for the session is now in front;
+ * - `opened`: no window had it, `code` was asked to open the folder;
+ * - `explorer`: no window and no `code` on PATH, Explorer shows the folder;
+ * - `failed`: nothing happened — bad input, a launch that failed, or Windows
+ *   refused to bring the window forward (its taskbar button flashes instead).
+ */
+export type OpenSessionResult = "focused" | "opened" | "explorer" | "failed";
 
 export interface IntegrationUpdate {
   id: string;
