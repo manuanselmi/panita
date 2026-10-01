@@ -54,25 +54,15 @@ export const Bridge = {
   openInVSCode: (path: string | null) => call<boolean>("open_in_vscode", { path }),
 
   /**
-   * "Open" on a session: bring that session's terminal to the front, or open
-   * its folder.
-   *
-   * FALLBACK — the wsl-and-focus branch replaces this function with the real
-   * command (focus the session's terminal window, open WSL folders through the
-   * distro). Same signature, so callers do not change. Until then it is
-   * `openInVSCode`: VS Code when `code` is on PATH ("opened"), else Explorer
-   * ("explorer"), and `wslDistro` is not used.
+   * "Open" for a Claude Code session: brings the VS Code window it lives in to
+   * the front — restoring it, switching virtual desktop if it is on another
+   * one — and only opens the folder when no window has it (`code <cwd>`, or the
+   * WSL remote URI; Explorer without `code`). `cwd` and `wslDistro` are the
+   * hook payload's `cwd` and `wsl_distro` (null for a Windows session; `cwd` is
+   * then a Linux path). Never throws: anything that goes wrong is "failed".
    */
-  openSession: async (
-    cwd: string | null,
-    wslDistro: string | null,
-  ): Promise<"focused" | "opened" | "explorer" | "failed"> => {
-    void wslDistro;
-    const path = cwd || null;
-    const inCode = await call<boolean>("open_in_vscode", { path });
-    if (inCode) return "opened";
-    return inCode === false && path ? "explorer" : "failed";
-  },
+  openSession: async (cwd: string | null, wslDistro: string | null): Promise<OpenSessionResult> =>
+    (await call<OpenSessionResult>("open_session", { cwd, wslDistro })) ?? "failed",
 
   quit: () => call<void>("quit_app"),
 
@@ -82,15 +72,24 @@ export const Bridge = {
   log: (message: string) => call<void>("log_line", { message }),
 
   // ── Claude Code hooks ─────────────────────────────────────────────────────
-  hooksStatus: () => call<HookStatus>("hooks_status"),
-  /** Diff to show before anything is written. `install: false` previews removal. */
-  hooksPreview: (install: boolean) => callOrThrow<HookPreview>("hooks_preview", { install }),
+  // A target is "windows" or "wsl:<distro>"; leaving it out means Windows.
+
+  /** Windows, then each WSL distro. Read from the registry; starts nothing. */
+  hooksTargets: () => call<HookTarget[]>("hooks_targets"),
   /**
-   * Writes ~/.claude/settings.json — only ever after an explicit click, and only
-   * when the file still matches the preview the user looked at.
+   * Whether a target has Coucou's hooks. A stopped WSL distro is only started
+   * to find out when `start` is true; otherwise it comes back `checked: false`.
    */
-  hooksApply: (install: boolean, fingerprint: string) =>
-    callOrThrow<string>("hooks_apply", { install, fingerprint }),
+  hooksStatus: (target?: string, start = false) => call<HookStatus>("hooks_status", { target, start }),
+  /** Diff to show before anything is written. `install: false` previews removal. */
+  hooksPreview: (install: boolean, target?: string) =>
+    callOrThrow<HookPreview>("hooks_preview", { install, target }),
+  /**
+   * Writes that target's ~/.claude/settings.json — only ever after an explicit
+   * click, and only when the file still matches the preview the user looked at.
+   */
+  hooksApply: (install: boolean, fingerprint: string, target?: string) =>
+    callOrThrow<string>("hooks_apply", { install, fingerprint, target }),
 
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
@@ -120,6 +119,15 @@ export const Bridge = {
   setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
 };
 
+/**
+ * - `focused`: an existing VS Code window for the session is now in front;
+ * - `opened`: no window had it, `code` was asked to open the folder;
+ * - `explorer`: no window and no `code` on PATH, Explorer shows the folder;
+ * - `failed`: nothing happened — bad input, a launch that failed, or Windows
+ *   refused to bring the window forward (its taskbar button flashes instead).
+ */
+export type OpenSessionResult = "focused" | "opened" | "explorer" | "failed";
+
 export interface IntegrationUpdate {
   id: string;
   data: Record<string, unknown>;
@@ -137,11 +145,27 @@ export interface DroppedFile {
   size: number;
 }
 
+export interface HookTarget {
+  /** "windows" or "wsl:<distro>" — what the hooks* calls take as `target`. */
+  id: string;
+  /** "Windows" or "WSL · <distro>". */
+  label: string;
+  kind: "windows" | "wsl";
+  distro: string | null;
+}
+
 export interface HookStatus {
+  target: string;
+  label: string;
   installed: boolean;
   settingsPath: string;
+  /** The relay as this target runs it: a Windows path, or its Linux path. */
   hookPath: string;
   hookReady: boolean;
+  /** False for a stopped WSL distro that was not started: `installed` is unknown. */
+  checked: boolean;
+  /** Why the target cannot be read right now (WSL unreachable, invalid JSON…). */
+  error: string | null;
 }
 
 export interface HookPreview {

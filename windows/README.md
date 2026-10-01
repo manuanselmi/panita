@@ -60,10 +60,11 @@ sessions.
 
 <img src="screenshots/settings.png" width="562" alt="The settings window">
 
-Open **Settings… → Claude Code → Install hooks…**. You get the exact diff of what
-will change in `%USERPROFILE%\.claude\settings.json`, the path of the dated backup
-that will be taken, and nothing is written until you click. Your own hooks are
-never touched, and uninstalling removes only Coucou's entries.
+Open **Settings… → Claude Code** and click **Install…** on the **Windows** row.
+You get the exact diff of what will change in
+`%USERPROFILE%\.claude\settings.json`, the path of the dated backup that will be
+taken, and nothing is written until you click. Your own hooks are never touched,
+and uninstalling removes only Coucou's entries.
 
 The relay is a tiny executable, `coucou-hook.exe`, copied to
 `%LOCALAPPDATA%\Coucou\bin\` at launch. It is given 300 ms to reach Coucou and
@@ -72,6 +73,25 @@ never blocked or slowed down by Coucou.** If nobody answers a permission request
 in time, Coucou stays quiet and Claude Code asks in the terminal as usual.
 
 It works from any terminal — Windows Terminal, PowerShell, VS Code, Git Bash.
+
+### Claude Code inside WSL
+
+Claude Code running inside WSL reads the distro's own `~/.claude/settings.json`,
+so **Settings… → Claude Code** has one row per place it runs: **Windows**, then
+**WSL · *distro*** for each of your distros, each with its own status and its own
+Install / Uninstall — the same diff, dated backup and explicit click before
+anything is written, and the same rule about leaving your own hooks alone.
+
+The hooks installed in a distro run the same Windows relay through WSL interop,
+by its Linux path (asked of the distro with `wslpath`, so a custom
+`automount.root` is fine), followed by `--wsl-distro "$WSL_DISTRO_NAME"` so the
+island knows the session lives in WSL. Interop has to be enabled in that distro
+(it is by default).
+
+Listing the distros reads the registry and starts nothing. A distro that is not
+running is not started just to show its status: its row offers **Check…**, and
+Install / Uninstall start it when you click them. Docker Desktop's and Rancher
+Desktop's own distros are not listed.
 
 ## Chat and keys
 
@@ -149,8 +169,9 @@ windows/
 
 ### Log
 
-`%LOCALAPPDATA%\Coucou\coucou.log` — hook events, permission decisions, poller
-problems. It stays on your machine.
+`%LOCALAPPDATA%\Coucou\coucou.log` — hook events (tagged `wsl=<distro>` for
+sessions inside WSL), permission decisions, poller problems. It stays on your
+machine.
 
 ## What's different from the Mac version
 

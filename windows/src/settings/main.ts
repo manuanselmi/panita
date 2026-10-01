@@ -3,7 +3,7 @@
 // integrations land here too in a later stage.
 
 import "./settings.css";
-import { Bridge, onEvent, type HookStatus } from "../core/bridge";
+import { Bridge, onEvent, type HookStatus, type HookTarget } from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
 
@@ -42,101 +42,177 @@ function renderDiff(text: string): HTMLElement {
 }
 
 // ── Claude Code section ───────────────────────────────────────────────────────
+//
+// One row per place Claude Code runs: Windows, then each WSL distro. Each has
+// its own settings.json, status and Install / Uninstall, and each goes through
+// the same preview → backup → write-on-click flow.
 
-function claudeSection(status: HookStatus): HTMLElement {
+const WINDOWS_TARGET: HookTarget = { id: "windows", label: "Windows", kind: "windows", distro: null };
+
+/**
+ * What a row knows. `null`: not looked at yet — WSL distros are only checked
+ * once the window is actually shown (`settings-shown`), because the page itself
+ * is loaded, hidden, when Coucou starts.
+ */
+type TargetState = HookStatus | "checking" | null;
+
+const GREY = "#6b7079";
+const AMBER = "#f5a524";
+
+function claudeSection(targets: HookTarget[], windows: HookStatus | null, relayPath: string) {
+  const states = new Map<string, TargetState>();
+  for (const t of targets) states.set(t.id, t.kind === "windows" ? windows : null);
+  let relayReady = windows?.hookReady ?? false;
+  /** The target whose diff is on screen; rows are not redrawn under it. */
+  let previewing: string | null = null;
+
+  const head = h("h2", {});
   const body = h("div", { style: "display:flex;flex-direction:column;gap:12px" });
-  const section = h(
-    "section",
-    {},
-    h("h2", {}, statusDot(status.installed), h("span", { text: "Claude Code" })),
-    body,
-  );
+  const section = h("section", { "data-section": "claude-code" }, head, body);
 
-  const rebuild = async () => {
-    const fresh = await Bridge.hooksStatus();
-    if (fresh) Object.assign(status, fresh);
+  const known = (s: TargetState | undefined): s is HookStatus => typeof s === "object" && s !== null;
+  const anyInstalled = () => [...states.values()].some((s) => known(s) && s.checked && s.installed);
+
+  function redraw() {
+    clear(head);
+    head.append(statusDot(anyInstalled()), h("span", { text: "Claude Code" }));
+    if (previewing) return;
     clear(body);
     draw();
-    const head = section.querySelector("h2")!;
-    clear(head);
-    head.append(statusDot(status.installed), h("span", { text: "Claude Code" }));
-  };
+  }
+
+  async function check(target: HookTarget, start: boolean) {
+    states.set(target.id, "checking");
+    redraw();
+    const status = await Bridge.hooksStatus(target.id, start);
+    states.set(target.id, status ?? {
+      target: target.id, label: target.label, installed: false, settingsPath: "", hookPath: "",
+      hookReady: false, checked: false, error: "Coucou didn't answer.",
+    });
+    if (target.kind === "windows" && status) relayReady = status.hookReady;
+    redraw();
+  }
+
+  function button(text: string, cls: string | null, onclick: () => void, disabled = false, title?: string) {
+    const b = h("button", { class: cls ?? undefined, text, onclick });
+    if (disabled) {
+      b.disabled = true;
+      if (title) b.title = title;
+    }
+    return b;
+  }
+
+  function targetRow(t: HookTarget): HTMLElement {
+    const s = states.get(t.id);
+    let color = GREY;
+    let state = "Not checked yet";
+    const actions: HTMLElement[] = [];
+    // Writing hook commands that point at a relay which isn't there would give
+    // every Claude Code session a broken hook and nothing to show for it.
+    const noRelay = !relayReady;
+    const install = (label: string) =>
+      button(label, "primary", () => void showPreview(t, true), noRelay, "The relay isn't installed yet.");
+
+    if (s === "checking") {
+      state = t.kind === "wsl" ? "Checking… (asking the distro)" : "Checking…";
+    } else if (!known(s)) {
+      actions.push(button("Check", null, () => void check(t, true)));
+    } else if (s.error) {
+      color = AMBER;
+      state = "Can't be read";
+      actions.push(button("Retry", null, () => void check(t, true)));
+    } else if (!s.checked) {
+      state = "Not running — not checked";
+      // Checking means starting the distro; only on request.
+      actions.push(button("Check…", null, () => void check(t, true)));
+    } else if (s.installed) {
+      color = "#22c55e";
+      state = "Installed";
+      actions.push(install("Reinstall…"), button("Uninstall…", "danger", () => void showPreview(t, false)));
+    } else {
+      color = "#f4505e";
+      state = "Not installed";
+      actions.push(install("Install…"));
+    }
+
+    const row = h("div", { class: "target", "data-target": t.id },
+      h("div", { class: "row" },
+        h("i", { class: "dot", style: `background:${color}` }),
+        h("span", { class: "name", text: t.label }),
+        h("span", { class: "hint state", text: state }),
+        h("span", { class: "spacer" }),
+        ...actions,
+      ),
+    );
+    if (known(s) && s.settingsPath) {
+      row.append(h("span", { class: "path", text: s.settingsPath, title: `Runs ${s.hookPath}` }));
+    }
+    if (known(s) && s.error) row.append(h("div", { class: "notice err", text: s.error }));
+    return row;
+  }
 
   function draw() {
     body.append(
       h("div", {
         class: "hint",
-        text: status.installed
+        text: anyInstalled()
           ? "Coucou is hooked into your Claude Code sessions. Tool calls, questions and permission requests show up in the island, and you can answer them there."
           : "Install the hooks to see your Claude Code sessions in the island and approve permissions without leaving what you are doing.",
       }),
       h("div", { class: "row" },
-        h("label", { text: "settings.json" }),
-        h("span", { class: "path", text: status.settingsPath }),
-      ),
-      h("div", { class: "row" },
         h("label", { text: "Relay" }),
-        h("span", { class: "path", text: status.hookPath }),
-        statusDot(status.hookReady),
+        h("span", { class: "path", text: relayPath }),
+        statusDot(relayReady),
       ),
     );
-
-    if (!status.hookReady) {
+    if (!relayReady) {
       body.append(h("div", {
         class: "notice warn",
         text: "coucou-hook.exe is not in place yet. Restart Coucou; if it still fails, build it with `cargo build -p coucou-hook`.",
       }));
     }
-
-    const actions = h("div", { class: "row" });
-    const install = h("button", {
-      class: "primary",
-      text: status.installed ? "Reinstall hooks…" : "Install hooks…",
-      onclick: () => showPreview(true),
-    });
-    // Writing hook commands that point at a relay which isn't there would give
-    // every Claude Code session a broken hook and nothing to show for it.
-    if (!status.hookReady) {
-      install.disabled = true;
-      install.title = "The relay isn't installed yet.";
-    }
-    actions.append(install);
-    if (status.installed) {
-      actions.append(h("button", {
-        class: "danger",
-        text: "Uninstall hooks…",
-        onclick: () => showPreview(false),
+    body.append(h("div", { class: "targets" }, ...targets.map(targetRow)));
+    if (targets.some((t) => t.kind === "wsl")) {
+      body.append(h("div", {
+        class: "hint",
+        text: "WSL sessions run the same relay through WSL interop; each distro has its own ~/.claude/settings.json.",
       }));
     }
-    body.append(actions);
   }
 
-  async function showPreview(install: boolean) {
+  function back() {
+    previewing = null;
+    redraw();
+  }
+
+  async function showPreview(t: HookTarget, install: boolean) {
+    previewing = t.id;
+    clear(body);
+    // A stopped distro is started to read its settings.json: say so.
+    body.append(h("div", { class: "hint", text: `Reading ${t.label}…` }));
     let preview;
     try {
-      preview = await Bridge.hooksPreview(install);
+      preview = await Bridge.hooksPreview(install, t.id);
     } catch (err) {
       // An unreadable or invalid settings.json stops here rather than being
       // treated as empty and written over.
       clear(body);
       body.append(
         h("div", { class: "notice err", text: String(err).replace(/^Error:\s*/, "") }),
-        h("div", { class: "row" }, h("button", {
-          text: "Back",
-          onclick: () => { clear(body); draw(); },
-        })),
+        h("div", { class: "row" }, h("button", { text: "Back", onclick: back })),
       );
       return;
     }
-    if (!preview) return;
+    const where = t.kind === "wsl" ? `the settings.json of ${t.label}` : "your settings.json";
     clear(body);
     body.append(
       h("div", {
         class: "hint",
         text: install
-          ? "This is exactly what will change in your settings.json. Your own hooks are left untouched."
-          : "This removes Coucou's entries only. Your own hooks are left untouched.",
+          ? `This is exactly what will change in ${where}. Your own hooks are left untouched.`
+          : `This removes Coucou's entries from ${where} only. Your own hooks are left untouched.`,
       }),
+      h("div", { class: "row" }, h("span", { class: "path", text: preview.settingsPath })),
       renderDiff(preview.diff),
       h("div", { class: "row" },
         h("span", { class: "path", text: `Backup → ${preview.backup}` }),
@@ -149,26 +225,33 @@ function claudeSection(status: HookStatus): HTMLElement {
     confirm.addEventListener("click", async () => {
       confirm.disabled = true;
       try {
-        const backup = await Bridge.hooksApply(install, preview.fingerprint);
+        const backup = await Bridge.hooksApply(install, preview.fingerprint, t.id);
         clear(body);
+        const session = t.kind === "wsl" ? `Claude Code session in ${t.distro}` : "Claude Code session";
         body.append(h("div", {
           class: "notice ok",
-          text: `Done. Previous settings saved as ${backup}. Open a new Claude Code session to pick the hooks up.`,
+          text: `Done. Previous settings saved as ${backup}. Open a new ${session} to pick the hooks up.`,
         }));
-        window.setTimeout(() => void rebuild(), 2600);
+        window.setTimeout(() => {
+          previewing = null;
+          void check(t, true);
+        }, 2600);
       } catch (err) {
         confirm.disabled = false;
         body.append(h("div", { class: "notice err", text: `Could not write: ${String(err)}` }));
       }
     });
-    body.append(h("div", { class: "row" }, confirm, h("button", {
-      text: "Cancel",
-      onclick: () => { clear(body); draw(); },
-    })));
+    body.append(h("div", { class: "row" }, confirm, h("button", { text: "Cancel", onclick: back })));
   }
 
-  draw();
-  return section;
+  redraw();
+  return {
+    el: section,
+    /** The window was shown: look at every target again, WSL included. */
+    refresh: () => {
+      for (const t of targets) void check(t, false);
+    },
+  };
 }
 
 // ── Claude API section ────────────────────────────────────────────────────────
@@ -425,9 +508,10 @@ async function main() {
     settings = { ...settings, ...boot.settings };
     version = boot.version;
   }
-  const status = (await Bridge.hooksStatus()) ?? {
-    installed: false, settingsPath: "", hookPath: "", hookReady: false,
-  };
+  // Windows now, the WSL distros once the window is shown (see claudeSection).
+  const targets = (await Bridge.hooksTargets()) ?? [WINDOWS_TARGET];
+  const windows = await Bridge.hooksStatus();
+  const claude = claudeSection(targets, windows, windows?.hookPath ?? boot?.hookPath ?? "");
 
   const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
 
@@ -441,7 +525,7 @@ async function main() {
   clear(root);
   root.append(
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
-    claudeSection(status),
+    claude.el,
     apiSection(hasKey),
     integrationsSection(present),
     generalSection(),
@@ -454,6 +538,7 @@ async function main() {
   void onEvent<Settings>("settings-changed", (s) => {
     settings = { ...settings, ...s };
   });
+  void onEvent<null>("settings-shown", () => claude.refresh());
 }
 
 void main();

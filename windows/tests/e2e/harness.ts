@@ -20,6 +20,7 @@
 //     build would ignore the variable and run as the real install.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -30,6 +31,12 @@ export const APP_EXE = path.join(WINDOWS_DIR, "target", "debug", "coucou.exe");
 export const HOOK_EXE = path.join(WINDOWS_DIR, "target", "release", "coucou-hook.exe");
 export const RESULTS_DIR = path.join(WINDOWS_DIR, "test-results", "e2e");
 const PID_FILE = path.join(RESULTS_DIR, "app.pid");
+/**
+ * The side instance's sandbox home (COUCOU_TEST_HOME, see hooks::test_home):
+ * every hook target's settings.json lives under it instead of the real homes —
+ * `windows\.claude\settings.json` and `wsl\<distro>\.claude\settings.json`.
+ */
+export const SANDBOX_HOME = path.join(RESULTS_DIR, "sandbox-home");
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -329,6 +336,8 @@ export async function launchApp(sid: string): Promise<RunningApp> {
   if (!removeSideDirs()) throw new Error(`a "${INSTANCE}" instance appeared while launching; not starting another`);
   writeSideSettings();
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
+  fs.rmSync(SANDBOX_HOME, { recursive: true, force: true });
+  fs.mkdirSync(SANDBOX_HOME, { recursive: true });
 
   const port = await freePort();
   const output = fs.createWriteStream(path.join(RESULTS_DIR, "app-output.log"));
@@ -337,6 +346,9 @@ export async function launchApp(sid: string): Promise<RunningApp> {
     env: {
       ...toolEnv(),
       COUCOU_INSTANCE: INSTANCE,
+      // Hook installs from this instance go to the sandbox, never to a real
+      // ~/.claude/settings.json (Windows or WSL). Only side instances honour it.
+      COUCOU_TEST_HOME: SANDBOX_HOME,
       // Read by WebView2 itself, and only this process tree gets it. WebView2
       // appends it to the island's own additionalBrowserArgs (verified in
       // "starts isolated"), so the app runs with its usual flags plus this one.
@@ -437,6 +449,140 @@ export function runHook(event: string, payload: Record<string, unknown>, timeout
   });
 }
 
+// ── WSL ───────────────────────────────────────────────────────────────────────
+//
+// The WSL cases run the relay from inside the user's own distro, through WSL
+// interop, exactly as a Claude Code session there would. Only read-only
+// commands run in the distro (sh, printf, wslpath, cmd.exe's echo) besides the
+// relay itself, and only when the distro is *already running*: the suite never
+// boots a WSL VM.
+//
+// The variable that sends the relay to the side instance must reach a Windows
+// process started from Linux. Two mechanisms do that, and the suite uses both:
+// it is set in wsl.exe's own (Windows) environment, which WSL interop hands to
+// every Windows process started inside that session, and it is listed in
+// WSLENV *without* a flag so Linux sees it too. (`/u` would be wrong for the
+// second hop: it only covers Windows → Linux, so a value set inside Linux with
+// `WSLENV=COUCOU_INSTANCE/u` never reaches the relay — `/w` or no flag does.)
+// Then, before any event is sent, `cmd.exe /c echo %COUCOU_INSTANCE%` is run
+// from the same shell: if it does not print the side instance's name, the
+// relay would talk to the real install, and the run stops there.
+
+const WSL_EXE = path.join(requiredEnv("SystemRoot"), "System32", "wsl.exe");
+
+/** `wsl.exe -l …` prints UTF-16LE. */
+function utf16Lines(buf: Buffer): string[] {
+  return buf
+    .toString("utf16le")
+    .replace(/^﻿/, "")
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\0/g, "").trim())
+    .filter(Boolean);
+}
+
+export type WslTarget = { distro: string; skip: null } | { distro: null; skip: string };
+
+/**
+ * The distro the WSL cases use: COUCOU_E2E_WSL_DISTRO, else the default one —
+ * and only if it is running right now. Otherwise the reason to skip.
+ */
+export function wslTarget(): WslTarget {
+  if (!fs.existsSync(WSL_EXE)) return { distro: null, skip: "WSL is not installed" };
+  let distro = process.env.COUCOU_E2E_WSL_DISTRO?.trim() || null;
+  if (!distro) {
+    try {
+      // powershellJson pipes the last statement into ConvertTo-Json, so it
+      // has to be a pipeline, not an `if`.
+      const found = powershellJson<{ DistributionName: string | null }>(
+        `$k = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss'; ` +
+          `$d = (Get-ItemProperty $k -ErrorAction SilentlyContinue).DefaultDistribution; ` +
+          `Get-ItemProperty "$k\\$d" -ErrorAction SilentlyContinue | Select-Object DistributionName`,
+      );
+      distro = found[0]?.DistributionName ?? null;
+    } catch {
+      distro = null;
+    }
+  }
+  if (!distro) return { distro: null, skip: "no default WSL distro" };
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(distro)) return { distro: null, skip: `odd distro name ${JSON.stringify(distro)}` };
+  const r = spawnSync(WSL_EXE, ["-l", "--running", "-q"], { windowsHide: true, timeout: 15_000 });
+  const running = r.status === 0 ? utf16Lines(r.stdout) : [];
+  if (!running.some((d) => d.toLowerCase() === distro!.toLowerCase())) {
+    return { distro: null, skip: `${distro} is not running (the suite never starts a distro)` };
+  }
+  return { distro, skip: null };
+}
+
+/** Env for wsl.exe: the side instance's name, on both sides of interop (see above). */
+function wslEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...toolEnv(), COUCOU_INSTANCE: INSTANCE };
+  const key = Object.keys(env).find((k) => k.toUpperCase() === "WSLENV") ?? "WSLENV";
+  const listed = (env[key] ?? "").split(":").filter((v) => v && !/^COUCOU_INSTANCE(\/|$)/.test(v));
+  env[key] = [...listed, "COUCOU_INSTANCE"].join(":");
+  return env;
+}
+
+/** A read-only command inside the distro; stdout as text. */
+export function wslRead(distro: string, script: string, ...args: string[]): string {
+  const r = spawnSync(WSL_EXE, ["-d", distro, "-e", "sh", "-c", script, "e2e", ...args], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 30_000,
+  });
+  if (r.status !== 0) throw new Error(`wsl ${script}: exit ${r.status}: ${r.stderr}`);
+  return r.stdout;
+}
+
+/** `wslpath -u` inside the distro — how Linux sees a Windows path. */
+export const wslPath = (distro: string, windowsPath: string) =>
+  wslRead(distro, 'wslpath -u "$1"', windowsPath).trim();
+
+/** `'<relay>' <Event> --wsl-distro "$WSL_DISTRO_NAME"` — the command Coucou installs in a distro. */
+export function wslHookCommand(relayLinux: string, event: string): string {
+  return `'${relayLinux.replace(/'/g, `'\\''`)}' ${event} --wsl-distro "$WSL_DISTRO_NAME"`;
+}
+
+/**
+ * Runs a hook command line inside WSL, through `sh -c`, the way Claude Code
+ * runs hooks there — JSON on stdin, whatever the relay prints on stdout — after
+ * checking that the side instance's name really reaches Windows processes
+ * started from that shell (exit code 97 and a message otherwise, with nothing
+ * sent).
+ */
+export function runHookInWsl(
+  distro: string,
+  command: string,
+  payload: Record<string, unknown>,
+  timeoutMs = 20_000,
+): Promise<HookRun> {
+  const cmdExe = wslPath(distro, path.join(requiredEnv("SystemRoot"), "System32", "cmd.exe"));
+  const script = [
+    // </dev/null: cmd.exe must not swallow the JSON meant for the relay.
+    `seen=$("$1" /d /c "echo %COUCOU_INSTANCE%" </dev/null 2>/dev/null | tr -d '\\r')`,
+    `if [ "$seen" != "$2" ]; then echo "COUCOU_INSTANCE does not reach Windows processes (got '$seen')" >&2; exit 97; fi`,
+    `exec sh -c "$3"`,
+  ].join("\n");
+  return new Promise((resolve, reject) => {
+    const started = performance.now();
+    const child = spawn(WSL_EXE, ["-d", distro, "-e", "sh", "-c", script, "e2e", cmdExe, INSTANCE, command], {
+      env: wslEnv(),
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    const timer = setTimeout(() => child.kill(), timeoutMs);
+    child.on("error", reject);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr, ms: Math.round(performance.now() - started) });
+    });
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+
 // ── The real install ──────────────────────────────────────────────────────────
 
 export interface RealInstall {
@@ -446,6 +592,29 @@ export interface RealInstall {
   logModified: Date | null;
   startedLines: number;
   inboxExists: boolean;
+  /** The real ~/.claude/settings.json files (Windows, and the WSL distro's when it runs): path → SHA-256, or null if absent. */
+  claudeSettings: Record<string, string | null>;
+}
+
+function sha256(file: string): string | null {
+  try {
+    return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+/** Where the real Claude Code settings live: Windows, and the running WSL distro's default user. */
+function realClaudeSettingsPaths(): string[] {
+  const paths = [path.join(requiredEnv("USERPROFILE"), ".claude", "settings.json")];
+  const wsl = wslTarget();
+  if (wsl.distro) {
+    const home = wslRead(wsl.distro, 'printf %s "$HOME"');
+    if (/^\/[^\\\0\n]*$/.test(home)) {
+      paths.push(`\\\\wsl.localhost\\${wsl.distro}${home.replace(/\//g, "\\")}\\.claude\\settings.json`);
+    }
+  }
+  return paths;
 }
 
 /** What the real install looks like right now — read only. */
@@ -459,14 +628,17 @@ export function snapshotRealInstall(sid: string): RealInstall {
     /* not installed, or never logged */
   }
   return {
+    // Debug builds are side instances — this run's, or another checkout's
+    // suite or `tauri dev` coming and going meanwhile — never the real install.
     processes: coucouProcesses()
-      .filter((p) => !samePath(p.path, APP_EXE))
+      .filter((p) => !samePath(p.path, APP_EXE) && !/\\target\\debug\\coucou\.exe$/i.test(p.path ?? ""))
       .map((p) => ({ pid: p.pid, path: p.path })),
     pipePresent: pipeNames().includes(realPipeName(sid)),
     logBytes: stat?.size ?? null,
     logModified: stat?.mtime ?? null,
     startedLines: (log.match(/--- Coucou .* started/g) ?? []).length,
     inboxExists: fs.existsSync(path.join(real.localDir, "inbox")),
+    claudeSettings: Object.fromEntries(realClaudeSettingsPaths().map((p) => [p, sha256(p)])),
   };
 }
 
