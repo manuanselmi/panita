@@ -137,6 +137,36 @@ export class IslandPage {
     );
   }
 
+  /** Calls one of Coucou's commands from the page, as the island's own code would. */
+  invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+    return this.cdp.evaluate<T>(
+      `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`,
+    );
+  }
+
+  /**
+   * Starts keeping a copy of every `hook` event payload the page receives —
+   * a listener of its own beside the island's, registered through Tauri's
+   * event plugin exactly as `onEvent` does it.
+   */
+  async recordHooks() {
+    await this.cdp.evaluate(`(() => {
+      if (window.__e2eHooks) return true;
+      window.__e2eHooks = [];
+      const T = window.__TAURI_INTERNALS__;
+      return T.invoke("plugin:event|listen", {
+        event: "hook",
+        target: { kind: "Any" },
+        handler: T.transformCallback((e) => window.__e2eHooks.push(e.payload)),
+      }).then(() => true);
+    })()`);
+  }
+
+  /** Payloads recorded since `recordHooks`, oldest first. */
+  hooksSeen(): Promise<Record<string, unknown>[]> {
+    return this.cdp.evaluate(`window.__e2eHooks ?? []`);
+  }
+
   /** The tray's Quit, through the same command. The page goes away with the app. */
   async quit() {
     await this.cdp
