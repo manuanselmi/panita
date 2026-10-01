@@ -59,7 +59,7 @@ static COUNTER: AtomicU64 = AtomicU64::new(1);
 /// `\\.\pipe\coucou-<sid>` — must match coucou-hook's `pipe_path()` exactly, which
 /// is why both build it with `instance::pipe_name` from the same source file.
 pub fn pipe_name() -> String {
-    let key = crate::win_user::current_user_sid()
+    let key = crate::win::current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
     crate::instance::pipe_name(&key)
 }
@@ -133,6 +133,11 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
         Some(_) => " wsl=?".to_string(),
         None => String::new(),
     };
+
+    // Which terminal the session runs in (ancestor_pids, wsl_ppid): kept here
+    // for "Open", never shown to the island. See terminal.rs.
+    app.state::<crate::terminal::Terminals>().observe(&event, &payload);
+    crate::terminal::strip(&mut payload);
 
     if event != "PermissionRequest" {
         log::line(format!("hook {event}{origin}"));

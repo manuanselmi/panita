@@ -25,15 +25,16 @@ afterEach(() => {
 });
 
 describe("openSession", () => {
-  it("calls open_session with the session's cwd and WSL distro", async () => {
+  it("calls open_session with the session's cwd, WSL distro and session id", async () => {
     const Bridge = await load(true);
     invoke.mockResolvedValue("focused");
-    expect(await Bridge.openSession("/home/u/proj", "Ubuntu-24.04")).toBe("focused");
-    expect(invoke).toHaveBeenCalledWith("open_session", { cwd: "/home/u/proj", wslDistro: "Ubuntu-24.04" });
+    expect(await Bridge.openSession("/home/u/proj", "Ubuntu-24.04", "s-1")).toBe("focused");
+    expect(invoke).toHaveBeenCalledWith("open_session", { cwd: "/home/u/proj", wslDistro: "Ubuntu-24.04", sessionId: "s-1" });
 
     invoke.mockResolvedValue("opened");
     expect(await Bridge.openSession(String.raw`C:\work\app`, null)).toBe("opened");
-    expect(invoke).toHaveBeenLastCalledWith("open_session", { cwd: String.raw`C:\work\app`, wslDistro: null });
+    // `sessionId` is `session_id` in Rust; without one the app skips the terminal step.
+    expect(invoke).toHaveBeenLastCalledWith("open_session", { cwd: String.raw`C:\work\app`, wslDistro: null, sessionId: null });
   });
 
   it("reports every outcome as is", async () => {
@@ -74,6 +75,20 @@ describe("hook targets", () => {
     expect(invoke).toHaveBeenLastCalledWith("hooks_apply", { install: false, fingerprint: "f", target: "wsl:Ubuntu-24.04" });
     await Bridge.hooksApply(true, "f");
     expect(invoke).toHaveBeenLastCalledWith("hooks_apply", { install: true, fingerprint: "f", target: undefined });
+  });
+
+  it("the companion VS Code extension: status quietly, install loudly", async () => {
+    const Bridge = await load(true);
+    const status = { codePath: "C:/x/code.cmd", installed: null, bundled: "0.1.0", vsixPath: "C:/x.vsix", upToDate: false, error: null };
+    invoke.mockResolvedValue(status);
+    expect(await Bridge.vscodeExtensionStatus()).toEqual(status);
+    expect(invoke).toHaveBeenLastCalledWith("vscode_extension_status", undefined);
+    invoke.mockResolvedValue("installed");
+    await Bridge.vscodeExtensionInstall();
+    expect(invoke).toHaveBeenLastCalledWith("vscode_extension_install", undefined);
+    // An install that fails must reach the button that asked for it.
+    invoke.mockRejectedValue("VS Code could not install it");
+    await expect(Bridge.vscodeExtensionInstall()).rejects.toBe("VS Code could not install it");
   });
 
   it("surface preview and apply errors so the settings window can show them", async () => {

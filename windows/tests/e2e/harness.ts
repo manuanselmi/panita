@@ -37,6 +37,19 @@ const PID_FILE = path.join(RESULTS_DIR, "app.pid");
  * `windows\.claude\settings.json` and `wsl\<distro>\.claude\settings.json`.
  */
 export const SANDBOX_HOME = path.join(RESULTS_DIR, "sandbox-home");
+/**
+ * A stand-in for VS Code's `code` command, first on the side instance's PATH:
+ * the app's `code --list-extensions`, `code --install-extension` and `code
+ * <folder>` all land here, are recorded in `calls.txt`, and nothing reaches
+ * the user's VS Code. See writeFakeCode().
+ */
+export const FAKE_CODE_DIR = path.join(RESULTS_DIR, "fake-code");
+export const FAKE_CODE = path.join(FAKE_CODE_DIR, "code.cmd");
+/** The companion VS Code extension's manifest (vscode-extension/package.json). */
+export const EXTENSION_MANIFEST = JSON.parse(
+  fs.readFileSync(path.join(WINDOWS_DIR, "vscode-extension", "package.json"), "utf8"),
+) as { publisher: string; name: string; version: string };
+export const EXTENSION_ID = `${EXTENSION_MANIFEST.publisher}.${EXTENSION_MANIFEST.name}`;
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -282,6 +295,43 @@ function writeSideSettings() {
   fs.writeFileSync(path.join(side.configDir, "settings.json"), JSON.stringify(settings, null, 2));
 }
 
+/**
+ * The fake `code` (FAKE_CODE_DIR): a batch file that appends its arguments to
+ * calls.txt and answers like VS Code's CLI would — `--list-extensions` lists
+ * one unrelated extension, plus ours once `--install-extension` has been
+ * "run". It opens nothing.
+ */
+function writeFakeCode() {
+  fs.rmSync(FAKE_CODE_DIR, { recursive: true, force: true });
+  fs.mkdirSync(FAKE_CODE_DIR, { recursive: true });
+  const script = [
+    "@echo off",
+    'echo %*>> "%~dp0calls.txt"',
+    'if "%~1"=="--list-extensions" (',
+    "  echo ms-python.python@2026.1.0",
+    '  if exist "%~dp0installed.txt" type "%~dp0installed.txt"',
+    "  exit /b 0",
+    ")",
+    'if "%~1"=="--install-extension" (',
+    `  > "%~dp0installed.txt" echo ${EXTENSION_ID}@${EXTENSION_MANIFEST.version}`,
+    "  echo Extension was successfully installed.",
+    "  exit /b 0",
+    ")",
+    "exit /b 0",
+    "",
+  ].join("\r\n");
+  fs.writeFileSync(FAKE_CODE, script);
+}
+
+/** Every call the side instance made to the fake `code`, oldest first. */
+export function fakeCodeCalls(): string[] {
+  try {
+    return fs.readFileSync(path.join(FAKE_CODE_DIR, "calls.txt"), "utf8").split(/\r?\n/).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 export function readSideLog(): string {
   try {
     return fs.readFileSync(side.log, "utf8");
@@ -338,13 +388,19 @@ export async function launchApp(sid: string): Promise<RunningApp> {
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
   fs.rmSync(SANDBOX_HOME, { recursive: true, force: true });
   fs.mkdirSync(SANDBOX_HOME, { recursive: true });
+  writeFakeCode();
 
   const port = await freePort();
   const output = fs.createWriteStream(path.join(RESULTS_DIR, "app-output.log"));
+  const env = toolEnv();
+  // The fake `code` first on PATH: whatever the app asks of VS Code reaches
+  // the stand-in, never the user's VS Code (checked before anything is clicked).
+  const pathKey = Object.keys(env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+  env[pathKey] = `${FAKE_CODE_DIR};${env[pathKey] ?? ""}`;
   const child = spawn(APP_EXE, [], {
     cwd: WINDOWS_DIR,
     env: {
-      ...toolEnv(),
+      ...env,
       COUCOU_INSTANCE: INSTANCE,
       // Hook installs from this instance go to the sandbox, never to a real
       // ~/.claude/settings.json (Windows or WSL). Only side instances honour it.
@@ -537,9 +593,94 @@ export function wslRead(distro: string, script: string, ...args: string[]): stri
 export const wslPath = (distro: string, windowsPath: string) =>
   wslRead(distro, 'wslpath -u "$1"', windowsPath).trim();
 
-/** `'<relay>' <Event> --wsl-distro "$WSL_DISTRO_NAME"` — the command Coucou installs in a distro. */
+/** `'<relay>' <Event> --wsl-distro "$WSL_DISTRO_NAME" --wsl-ppid "$PPID"` — the command Coucou installs in a distro. */
 export function wslHookCommand(relayLinux: string, event: string): string {
+  return `${wslHookCommandBeforePpid(relayLinux, event)} --wsl-ppid "$PPID"`;
+}
+
+/** The command an older Coucou installed in a distro, before `--wsl-ppid`. */
+export function wslHookCommandBeforePpid(relayLinux: string, event: string): string {
   return `'${relayLinux.replace(/'/g, `'\\''`)}' ${event} --wsl-distro "$WSL_DISTRO_NAME"`;
+}
+
+/**
+ * The first lines of every script that runs the relay from WSL: `$1` is
+ * cmd.exe's Linux path, `$2` the side instance's name. Unless a Windows
+ * process started from this shell sees that name, nothing is sent (exit 97).
+ */
+const WSL_INSTANCE_CHECK = [
+  // </dev/null: cmd.exe must not swallow the JSON meant for the relay.
+  `seen=$("$1" /d /c "echo %COUCOU_INSTANCE%" </dev/null 2>/dev/null | tr -d '\\r')`,
+  `if [ "$seen" != "$2" ]; then echo "COUCOU_INSTANCE does not reach Windows processes (got '$seen')" >&2; exit 97; fi`,
+];
+
+/** A hook run from WSL whose calling shell stays alive afterwards (see below). */
+export interface HeldWslHook {
+  /** The Linux PID of the shell the hook command ran under — the hook's `$PPID`. */
+  parentPid: Promise<number>;
+  /** Resolves once the hook command has exited (the shell then sleeps). */
+  hookDone: Promise<number>;
+  /** Everything, once the shell is gone. */
+  closed: Promise<HookRun>;
+  /** Ends our wsl.exe (and with it the sleeping shell). */
+  stop(): void;
+}
+
+/**
+ * Like runHookInWsl, but the hook command runs as a *child* of a shell that
+ * then sleeps for `holdSeconds`: its `$PPID` is that shell, as it is Claude
+ * Code in real life, and the shell is still alive — with its whole Linux
+ * ancestry — when the test clicks ↗ and the app reads /proc. The shell's PID
+ * is printed first on stderr. Read-only: `sh`, `sleep`, cmd.exe's echo and
+ * the relay.
+ */
+export function runHookInWslHolding(
+  distro: string,
+  command: string,
+  payload: Record<string, unknown>,
+  holdSeconds = 30,
+): HeldWslHook {
+  const cmdExe = wslPath(distro, path.join(requiredEnv("SystemRoot"), "System32", "cmd.exe"));
+  const script = [
+    ...WSL_INSTANCE_CHECK,
+    `echo "coucou-e2e-parent $$" >&2`,
+    `sh -c "$3"`,
+    `echo "coucou-e2e-hook-done $?" >&2`,
+    `sleep "$4" </dev/null`,
+  ].join("\n");
+  const started = performance.now();
+  const child = spawn(
+    WSL_EXE,
+    ["-d", distro, "-e", "sh", "-c", script, "e2e", cmdExe, INSTANCE, command, String(holdSeconds)],
+    { env: wslEnv(), stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
+  );
+  let stdout = "";
+  let stderr = "";
+  const marker = (re: RegExp) =>
+    new Promise<number>((resolve, reject) => {
+      const look = () => {
+        const m = stderr.match(re);
+        if (m) resolve(Number(m[1]));
+      };
+      child.stderr.on("data", look);
+      child.on("close", () => {
+        look();
+        reject(new Error(`the WSL shell ended first: ${stderr.trim()}`));
+      });
+    });
+  child.stdout.on("data", (d) => (stdout += d));
+  child.stderr.on("data", (d) => (stderr += d));
+  const parentPid = marker(/coucou-e2e-parent (\d+)/);
+  const hookDone = marker(/coucou-e2e-hook-done (\d+)/);
+  // Whoever does not wait for these must not get an unhandled rejection.
+  parentPid.catch(() => undefined);
+  hookDone.catch(() => undefined);
+  const closed = new Promise<HookRun>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr, ms: Math.round(performance.now() - started) }));
+  });
+  child.stdin.end(JSON.stringify(payload));
+  return { parentPid, hookDone, closed, stop: () => void child.kill() };
 }
 
 /**
@@ -556,12 +697,7 @@ export function runHookInWsl(
   timeoutMs = 20_000,
 ): Promise<HookRun> {
   const cmdExe = wslPath(distro, path.join(requiredEnv("SystemRoot"), "System32", "cmd.exe"));
-  const script = [
-    // </dev/null: cmd.exe must not swallow the JSON meant for the relay.
-    `seen=$("$1" /d /c "echo %COUCOU_INSTANCE%" </dev/null 2>/dev/null | tr -d '\\r')`,
-    `if [ "$seen" != "$2" ]; then echo "COUCOU_INSTANCE does not reach Windows processes (got '$seen')" >&2; exit 97; fi`,
-    `exec sh -c "$3"`,
-  ].join("\n");
+  const script = [...WSL_INSTANCE_CHECK, `exec sh -c "$3"`].join("\n");
   return new Promise((resolve, reject) => {
     const started = performance.now();
     const child = spawn(WSL_EXE, ["-d", distro, "-e", "sh", "-c", script, "e2e", cmdExe, INSTANCE, command], {

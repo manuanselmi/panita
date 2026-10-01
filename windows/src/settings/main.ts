@@ -3,7 +3,7 @@
 // integrations land here too in a later stage.
 
 import "./settings.css";
-import { Bridge, onEvent, type HookStatus, type HookTarget } from "../core/bridge";
+import { Bridge, onEvent, type ExtensionStatus, type HookStatus, type HookTarget } from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
 
@@ -58,6 +58,11 @@ type TargetState = HookStatus | "checking" | null;
 
 const GREY = "#6b7079";
 const AMBER = "#f5a524";
+const GREEN = "#22c55e";
+const RED = "#f4505e";
+
+/** The companion VS Code extension's row: checked once the window is shown. */
+type ExtensionState = ExtensionStatus | "checking" | "installing" | null;
 
 function claudeSection(targets: HookTarget[], windows: HookStatus | null, relayPath: string) {
   const states = new Map<string, TargetState>();
@@ -65,6 +70,8 @@ function claudeSection(targets: HookTarget[], windows: HookStatus | null, relayP
   let relayReady = windows?.hookReady ?? false;
   /** The target whose diff is on screen; rows are not redrawn under it. */
   let previewing: string | null = null;
+  let extension: ExtensionState = null;
+  let extensionNotice: { ok: boolean; text: string } | null = null;
 
   const head = h("h2", {});
   const body = h("div", { style: "display:flex;flex-direction:column;gap:12px" });
@@ -86,7 +93,7 @@ function claudeSection(targets: HookTarget[], windows: HookStatus | null, relayP
     redraw();
     const status = await Bridge.hooksStatus(target.id, start);
     states.set(target.id, status ?? {
-      target: target.id, label: target.label, installed: false, settingsPath: "", hookPath: "",
+      target: target.id, label: target.label, installed: false, outdated: false, settingsPath: "", hookPath: "",
       hookReady: false, checked: false, error: "Coucou didn't answer.",
     });
     if (target.kind === "windows" && status) relayReady = status.hookReady;
@@ -125,12 +132,18 @@ function claudeSection(targets: HookTarget[], windows: HookStatus | null, relayP
       state = "Not running — not checked";
       // Checking means starting the distro; only on request.
       actions.push(button("Check…", null, () => void check(t, true)));
+    } else if (s.installed && s.outdated) {
+      // Written by an older Coucou: updating goes through the same diff,
+      // backup and click as installing — never on its own.
+      color = AMBER;
+      state = "Installed — update available";
+      actions.push(install("Update…"), button("Uninstall…", "danger", () => void showPreview(t, false)));
     } else if (s.installed) {
-      color = "#22c55e";
+      color = GREEN;
       state = "Installed";
       actions.push(install("Reinstall…"), button("Uninstall…", "danger", () => void showPreview(t, false)));
     } else {
-      color = "#f4505e";
+      color = RED;
       state = "Not installed";
       actions.push(install("Install…"));
     }
@@ -178,6 +191,101 @@ function claudeSection(targets: HookTarget[], windows: HookStatus | null, relayP
         text: "WSL sessions run the same relay through WSL interop; each distro has its own ~/.claude/settings.json.",
       }));
     }
+    if ([...states.values()].some((s) => known(s) && s.installed && s.outdated)) {
+      body.append(h("div", {
+        class: "hint",
+        text: "An older Coucou wrote some of these hooks. Update… shows exactly what changes — in WSL the command now also passes the session's process id, so ↗ can find its terminal.",
+      }));
+    }
+    body.append(extensionRow());
+  }
+
+  // ── VS Code terminal focus ──────────────────────────────────────────────────
+  // The companion extension (windows/vscode-extension): with it, ↗ brings the
+  // session's own terminal tab forward, not just its window. Checking runs
+  // VS Code's `code --list-extensions`, so it waits for the window to be shown;
+  // installing runs `code --install-extension` and only on a click.
+
+  async function checkExtension() {
+    extension = "checking";
+    redraw();
+    extension = (await Bridge.vscodeExtensionStatus()) ?? {
+      codePath: null, installed: null, bundled: "", vsixPath: null, upToDate: false, error: "Coucou didn't answer.",
+    };
+    redraw();
+  }
+
+  async function installExtension() {
+    extension = "installing";
+    extensionNotice = null;
+    redraw();
+    try {
+      await Bridge.vscodeExtensionInstall();
+      extensionNotice = {
+        ok: true,
+        text: "Installed. VS Code windows that were already open pick it up once reloaded (Developer: Reload Window).",
+      };
+    } catch (err) {
+      extensionNotice = { ok: false, text: `Could not install: ${String(err).replace(/^Error:\s*/, "")}` };
+    }
+    await checkExtension();
+  }
+
+  function extensionRow(): HTMLElement {
+    const e = extension;
+    let color = GREY;
+    let state = "Not checked yet";
+    const actions: HTMLElement[] = [];
+    const install = (label: string, missing: boolean) =>
+      button(label, "primary", () => void installExtension(), missing, "This build of Coucou has no extension package.");
+
+    if (e === "checking") {
+      state = "Checking…";
+    } else if (e === "installing") {
+      state = "Installing…";
+    } else if (e === null) {
+      actions.push(button("Check", null, () => void checkExtension()));
+    } else if (!e.codePath) {
+      state = "VS Code's code command isn't on PATH";
+      actions.push(button("Retry", null, () => void checkExtension()));
+    } else if (e.error) {
+      color = AMBER;
+      state = "Can't be checked";
+      actions.push(button("Retry", null, () => void checkExtension()));
+    } else if (!e.installed) {
+      color = RED;
+      state = "Not installed";
+      actions.push(install("Install", !e.vsixPath));
+    } else if (!e.upToDate) {
+      color = AMBER;
+      state = `Installed ${e.installed} — ${e.bundled} available`;
+      actions.push(install("Update", !e.vsixPath));
+    } else {
+      color = GREEN;
+      state = `Installed ${e.installed}`;
+    }
+
+    const row = h("div", { class: "target", "data-extension": "terminal-focus" },
+      h("div", { class: "row" },
+        h("i", { class: "dot", style: `background:${color}` }),
+        h("span", { class: "name", text: "VS Code terminal focus" }),
+        h("span", { class: "hint state", text: state }),
+        h("span", { class: "spacer" }),
+        ...actions,
+      ),
+      h("div", {
+        class: "hint",
+        text: "A small VS Code extension that lets ↗ on a session bring its own terminal tab forward, not just its window — Windows and WSL alike. It only answers Coucou, on this machine.",
+      }),
+    );
+    if (typeof e === "object" && e?.codePath) {
+      row.append(h("span", { class: "path", text: e.codePath, title: e.vsixPath ? `Installs ${e.vsixPath}` : "" }));
+    }
+    if (typeof e === "object" && e?.error) row.append(h("div", { class: "notice err", text: e.error }));
+    if (extensionNotice) {
+      row.append(h("div", { class: `notice ${extensionNotice.ok ? "ok" : "err"}`, text: extensionNotice.text }));
+    }
+    return row;
   }
 
   function back() {
@@ -247,9 +355,10 @@ function claudeSection(targets: HookTarget[], windows: HookStatus | null, relayP
   redraw();
   return {
     el: section,
-    /** The window was shown: look at every target again, WSL included. */
+    /** The window was shown: look at every target again, WSL included, and at VS Code. */
     refresh: () => {
       for (const t of targets) void check(t, false);
+      if (extension !== "installing") void checkExtension();
     },
   };
 }

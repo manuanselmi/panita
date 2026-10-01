@@ -16,6 +16,13 @@
 //      `code --folder-uri vscode-remote://wsl+<distro><path>` for a WSL one;
 //      without `code` on PATH, Explorer on the folder.
 //
+// Before all of this, terminal.rs may already have had the companion VS Code
+// extension show the session's own terminal tab. The extension then names the
+// window it is in — its workspace name, which is the title's root name — and
+// that window wins over the folder guess of step 2. And since the session is
+// known to live in that window, a window that cannot be found by its title
+// (a custom `window.title`) is left alone rather than opening another one.
+//
 // The title is all we have to go on — VS Code exposes no API for "which
 // folder is this window" — and its default format is
 //   `[● ]<editor> - <rootName>[ - <profile>] - Visual Studio Code`
@@ -43,6 +50,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     FLASHW_TIMERNOFG, GW_OWNER, MSG, PM_NOREMOVE, SW_RESTORE,
 };
 
+use crate::terminal::Shown;
 use crate::{log, wsl};
 
 /// Keeps `code.cmd` from flashing a console window.
@@ -66,7 +74,9 @@ pub enum Outcome {
     /// No window matched and `code` is not on PATH; Explorer shows the folder.
     Explorer,
     /// Nothing could be done: bad input, a launch that failed, or Windows
-    /// refused to bring the window forward (its taskbar button flashes).
+    /// refused to bring the window forward (its taskbar button flashes) — or
+    /// the extension showed the terminal but its window has no recognisable
+    /// title, so it was left where it was (`Plan::Leave`).
     Failed,
 }
 
@@ -221,6 +231,27 @@ pub fn pick_window(titles: &[&str], cwd: &str, wsl_distro: Option<&str>) -> Opti
     None
 }
 
+/// Index into `titles` of the window whose root name is exactly `name` — the
+/// `vscode.workspace.name` the extension reported, which VS Code builds with
+/// the same call as the title's `${rootName}`, `[WSL: …]` suffix included.
+/// A strong match beats a weak one, then the frontmost wins, as in `pick_window`.
+pub fn window_named(titles: &[&str], name: &str) -> Option<usize> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let mut best: Option<(usize, Strength)> = None;
+    for (i, title) in titles.iter().enumerate() {
+        let Some(rest) = workspace_part(title) else { continue };
+        if let Some(strength) = title_match(rest, name) {
+            if best.map_or(true, |(_, b)| strength > b) {
+                best = Some((i, strength));
+            }
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
 // ── Deciding (pure) ───────────────────────────────────────────────────────────
 
 /// The folder Explorer would show when VS Code can't.
@@ -240,32 +271,68 @@ pub enum Plan {
     Open { code_args: Option<Vec<String>>, folder: Option<Folder> },
     /// Refused before doing anything.
     Fail(String),
+    /// The extension showed the session's terminal, but its window cannot be
+    /// told apart by title: nothing more to do — opening the folder again
+    /// would only add a window.
+    Leave(String),
 }
 
-/// What to do for a session, given the VS Code titles on screen.
-pub fn plan(titles: &[&str], cwd: Option<&str>, wsl_distro: Option<&str>, code_on_path: bool) -> Plan {
+/// Why `open_session` must refuse this input before doing anything at all, if
+/// it must: a distro that is not a distro name, or a folder that is not an
+/// absolute path of the session's kind.
+pub fn refusal(cwd: Option<&str>, wsl_distro: Option<&str>) -> Option<String> {
     let cwd = cwd.map(str::trim).filter(|c| !c.is_empty());
     let distro = wsl_distro.map(str::trim).filter(|d| !d.is_empty());
-    if let Some(d) = distro {
-        if !wsl::is_valid_distro_name(d) {
-            return Plan::Fail("not a WSL distro name".into());
-        }
+    if distro.is_some_and(|d| !wsl::is_valid_distro_name(d)) {
+        return Some("not a WSL distro name".into());
     }
-    let code = |args: Vec<String>| code_on_path.then_some(args);
-
-    let Some(cwd) = cwd else {
-        // Nothing to look for: bring VS Code up, as "Open terminal" always has.
-        return Plan::Open { code_args: code(Vec::new()), folder: None };
-    };
-    if root_names(cwd, distro).is_none() {
-        return Plan::Fail(match distro {
+    if cwd.is_some_and(|cwd| root_names(cwd, distro).is_none()) {
+        return Some(match distro {
             Some(_) => "the WSL session's folder is not an absolute Linux path".into(),
             None => "the session's folder is not an absolute Windows path".into(),
         });
     }
-    if let Some(i) = pick_window(titles, cwd, distro) {
+    None
+}
+
+/// `"WSL"` or `"Windows"`, for the log.
+pub fn session_kind(wsl_distro: Option<&str>) -> &'static str {
+    if wsl_distro.is_some_and(|d| !d.trim().is_empty()) { "WSL" } else { "Windows" }
+}
+
+/// What to do for a session, given the VS Code titles on screen. `shown` is
+/// what terminal.rs found, if the extension showed the session's terminal.
+pub fn plan(
+    titles: &[&str],
+    cwd: Option<&str>,
+    wsl_distro: Option<&str>,
+    code_on_path: bool,
+    shown: Option<&Shown>,
+) -> Plan {
+    if let Some(why) = refusal(cwd, wsl_distro) {
+        return Plan::Fail(why);
+    }
+    let cwd = cwd.map(str::trim).filter(|c| !c.is_empty());
+    let distro = wsl_distro.map(str::trim).filter(|d| !d.is_empty());
+    let code = |args: Vec<String>| code_on_path.then_some(args);
+
+    // The window the terminal is in, as the extension named it, beats any guess.
+    if let Some(i) = shown.and_then(|s| s.window.as_deref()).and_then(|name| window_named(titles, name)) {
         return Plan::Focus(i);
     }
+    if let Some(i) = cwd.and_then(|cwd| pick_window(titles, cwd, distro)) {
+        return Plan::Focus(i);
+    }
+    if let Some(s) = shown {
+        return Plan::Leave(match &s.window {
+            Some(name) => format!("no window titled for \"{name}\" (a custom window.title?)"),
+            None => "its window has no folder to find it by".into(),
+        });
+    }
+    let Some(cwd) = cwd else {
+        // Nothing to look for: bring VS Code up, as "Open terminal" always has.
+        return Plan::Open { code_args: code(Vec::new()), folder: None };
+    };
     match distro {
         None => Plan::Open {
             code_args: code(vec![cwd.to_string()]),
@@ -502,15 +569,16 @@ fn became_foreground(target: HWND) -> bool {
 // ── Doing it ──────────────────────────────────────────────────────────────────
 
 /// Takes the user to the session's VS Code window, or opens its folder.
+/// `shown`: the terminal step's result (terminal.rs), if any.
 /// Blocking (enumeration, a short wait for the foreground): call it off the
 /// main thread.
-pub fn open_session(cwd: Option<String>, wsl_distro: Option<String>) -> Outcome {
+pub fn open_session(cwd: Option<String>, wsl_distro: Option<String>, shown: Option<Shown>) -> Outcome {
     let windows = top_level_windows(&|image| image.eq_ignore_ascii_case(VSCODE_EXE));
     let titles: Vec<&str> = windows.iter().map(|w| w.title.as_str()).collect();
     let code = crate::find_on_path("code");
-    let kind = if wsl_distro.as_deref().is_some_and(|d| !d.trim().is_empty()) { "WSL" } else { "Windows" };
+    let kind = session_kind(wsl_distro.as_deref());
 
-    match plan(&titles, cwd.as_deref(), wsl_distro.as_deref(), code.is_some()) {
+    match plan(&titles, cwd.as_deref(), wsl_distro.as_deref(), code.is_some(), shown.as_ref()) {
         Plan::Focus(i) => {
             let w = &windows[i];
             let where_ = match (w.cloaked, w.minimized) {
@@ -560,6 +628,10 @@ pub fn open_session(cwd: Option<String>, wsl_distro: Option<String>) -> Outcome 
         }
         Plan::Fail(why) => {
             log::line(format!("open session ({kind}): refused — {why}"));
+            Outcome::Failed
+        }
+        Plan::Leave(why) => {
+            log::line(format!("open session ({kind}): terminal shown, window not raised — {why}"));
             Outcome::Failed
         }
     }
@@ -751,14 +823,14 @@ mod tests {
     #[test]
     fn the_plan_focuses_opens_or_refuses() {
         let titles = ["x - GitHub - Visual Studio Code", "y - proj [WSL: Ubuntu-24.04] - Visual Studio Code"];
-        assert_eq!(plan(&titles, Some(r"C:\a\GitHub\panita"), None, true), Plan::Focus(0));
-        assert_eq!(plan(&titles, Some("/home/u/proj"), U, true), Plan::Focus(1));
+        assert_eq!(plan(&titles, Some(r"C:\a\GitHub\panita"), None, true, None), Plan::Focus(0));
+        assert_eq!(plan(&titles, Some("/home/u/proj"), U, true, None), Plan::Focus(1));
         // Matching happens whether or not `code` is on PATH.
-        assert_eq!(plan(&titles, Some("/home/u/proj"), U, false), Plan::Focus(1));
+        assert_eq!(plan(&titles, Some("/home/u/proj"), U, false, None), Plan::Focus(1));
 
         // No window: `code <cwd>` — exactly as "Open terminal" does today.
         assert_eq!(
-            plan(&titles, Some(r"C:\work\other app"), None, true),
+            plan(&titles, Some(r"C:\work\other app"), None, true, None),
             Plan::Open {
                 code_args: Some(vec![r"C:\work\other app".into()]),
                 folder: Some(Folder::Windows(r"C:\work\other app".into())),
@@ -766,7 +838,7 @@ mod tests {
         );
         // No window, WSL: the remote folder URI.
         assert_eq!(
-            plan(&titles, Some("/home/u/my app"), U, true),
+            plan(&titles, Some("/home/u/my app"), U, true, None),
             Plan::Open {
                 code_args: Some(vec!["--folder-uri".into(), "vscode-remote://wsl+Ubuntu-24.04/home/u/my%20app".into()]),
                 folder: Some(Folder::Wsl { distro: "Ubuntu-24.04".into(), path: "/home/u/my app".into() }),
@@ -774,25 +846,95 @@ mod tests {
         );
         // No `code`: Explorer only.
         assert_eq!(
-            plan(&[], Some("/home/u/p"), U, false),
+            plan(&[], Some("/home/u/p"), U, false, None),
             Plan::Open { code_args: None, folder: Some(Folder::Wsl { distro: "Ubuntu-24.04".into(), path: "/home/u/p".into() }) }
         );
         assert_eq!(
-            plan(&[], Some(r"C:\p"), None, false),
+            plan(&[], Some(r"C:\p"), None, false, None),
             Plan::Open { code_args: None, folder: Some(Folder::Windows(r"C:\p".into())) }
         );
         // No folder at all: just VS Code, or nothing.
-        assert_eq!(plan(&titles, None, None, true), Plan::Open { code_args: Some(vec![]), folder: None });
-        assert_eq!(plan(&titles, Some("  "), U, false), Plan::Open { code_args: None, folder: None });
+        assert_eq!(plan(&titles, None, None, true, None), Plan::Open { code_args: Some(vec![]), folder: None });
+        assert_eq!(plan(&titles, Some("  "), U, false, None), Plan::Open { code_args: None, folder: None });
         // An empty distro is a Windows session.
-        assert_eq!(plan(&titles, Some(r"C:\a\GitHub"), Some(""), true), Plan::Focus(0));
+        assert_eq!(plan(&titles, Some(r"C:\a\GitHub"), Some(""), true, None), Plan::Focus(0));
 
         // Refused before anything runs.
-        assert!(matches!(plan(&titles, Some("/home/u/proj"), Some("bad name"), true), Plan::Fail(_)));
-        assert!(matches!(plan(&titles, Some("/home/u/proj"), Some("x;rm -rf ~"), true), Plan::Fail(_)));
-        assert!(matches!(plan(&titles, Some(r"C:\a"), U, true), Plan::Fail(_)), "a WSL session needs a Linux path");
-        assert!(matches!(plan(&titles, Some("relative"), None, true), Plan::Fail(_)));
-        assert!(matches!(plan(&titles, Some("/home/u"), None, true), Plan::Fail(_)), "a Windows session needs a Windows path");
+        assert!(matches!(plan(&titles, Some("/home/u/proj"), Some("bad name"), true, None), Plan::Fail(_)));
+        assert!(matches!(plan(&titles, Some("/home/u/proj"), Some("x;rm -rf ~"), true, None), Plan::Fail(_)));
+        assert!(matches!(plan(&titles, Some(r"C:\a"), U, true, None), Plan::Fail(_)), "a WSL session needs a Linux path");
+        assert!(matches!(plan(&titles, Some("relative"), None, true, None), Plan::Fail(_)));
+        assert!(matches!(plan(&titles, Some("/home/u"), None, true, None), Plan::Fail(_)), "a Windows session needs a Windows path");
+    }
+
+    fn shown(window: Option<&str>) -> Shown {
+        Shown { terminal: "pwsh".into(), window: window.map(str::to_string) }
+    }
+
+    #[test]
+    fn the_window_the_extension_names_beats_the_folder_guess() {
+        // The session runs in GitHub\panita\windows; its terminal is in the
+        // window on GitHub, while a window on panita is deeper — and would win
+        // the folder guess.
+        let titles = ["a.rs - GitHub - Visual Studio Code", "b.rs - panita - Visual Studio Code"];
+        let cwd = Some(r"C:\Users\me\GitHub\panita\windows");
+        assert_eq!(plan(&titles, cwd, None, true, None), Plan::Focus(1));
+        assert_eq!(plan(&titles, cwd, None, true, Some(&shown(Some("GitHub")))), Plan::Focus(0));
+        // A WSL window, named with its suffix, exactly as its title shows it.
+        let wsl = ["x - proj [WSL: Ubuntu-24.04] - Visual Studio Code", "y - proj - Visual Studio Code"];
+        assert_eq!(plan(&wsl, Some("/home/u/proj"), U, true, Some(&shown(Some("proj [WSL: Ubuntu-24.04]")))), Plan::Focus(0));
+        // A WSL session whose terminal is a `wsl.exe` tab in a local window.
+        assert_eq!(plan(&wsl, Some("/home/u/proj"), U, true, Some(&shown(Some("proj")))), Plan::Focus(1));
+        // A multi-root workspace's name.
+        let multi = ["x - work (Workspace) - Visual Studio Code"];
+        assert_eq!(plan(&multi, Some(r"C:\w\a"), None, true, Some(&shown(Some("work (Workspace)")))), Plan::Focus(0));
+    }
+
+    #[test]
+    fn a_shown_terminal_never_opens_another_window() {
+        let titles = ["a.rs - elsewhere - Visual Studio Code"];
+        // Named, but no title says so (custom window.title): left alone.
+        assert!(matches!(plan(&titles, Some(r"C:\w\proj"), None, true, Some(&shown(Some("proj-x")))), Plan::Leave(_)));
+        // Unnamed (a window without a folder) and no folder match: left alone.
+        assert!(matches!(plan(&titles, Some(r"C:\w\proj"), None, true, Some(&shown(None))), Plan::Leave(_)));
+        assert!(matches!(plan(&titles, None, None, true, Some(&shown(None))), Plan::Leave(_)));
+        // Unnamed, but the folder finds a window: that one.
+        let by_folder = ["a.rs - proj - Visual Studio Code"];
+        assert_eq!(plan(&by_folder, Some(r"C:\w\proj"), None, true, Some(&shown(None))), Plan::Focus(0));
+        // A named window that is not on screen falls back to the folder too.
+        assert_eq!(plan(&by_folder, Some(r"C:\w\proj"), None, true, Some(&shown(Some("gone")))), Plan::Focus(0));
+        // Bad input is refused before any of it.
+        assert!(matches!(plan(&by_folder, Some("relative"), None, true, Some(&shown(Some("proj")))), Plan::Fail(_)));
+    }
+
+    #[test]
+    fn window_names_match_exactly_and_prefer_the_strong_position() {
+        let titles = [
+            "Proj - Visual Studio Code",
+            "proj - Work - Visual Studio Code",
+            "x.rs - proj - Visual Studio Code",
+            "Welcome - Visual Studio Code",
+        ];
+        // Exact case: the name is the title's own text, not a folder on disk.
+        assert_eq!(window_named(&titles, "proj"), Some(2));
+        assert_eq!(window_named(&titles, "Proj"), Some(0));
+        assert_eq!(window_named(&titles, "PROJ"), None);
+        assert_eq!(window_named(&titles, ""), None);
+        assert_eq!(window_named(&titles, "  "), None);
+        assert_eq!(window_named(&["Visual Studio Code"], "Visual Studio Code"), None);
+    }
+
+    #[test]
+    fn refusals_are_the_same_with_or_without_a_terminal() {
+        assert_eq!(refusal(None, None), None);
+        assert_eq!(refusal(Some(r"C:\a"), None), None);
+        assert_eq!(refusal(Some("/home/u"), Some("Ubuntu")), None);
+        assert_eq!(refusal(Some("/home/u"), Some("bad name")).as_deref(), Some("not a WSL distro name"));
+        assert!(refusal(Some(r"C:\a"), Some("Ubuntu")).unwrap().contains("absolute Linux path"));
+        assert!(refusal(Some("rel"), None).unwrap().contains("absolute Windows path"));
+        assert_eq!(session_kind(None), "Windows");
+        assert_eq!(session_kind(Some(" ")), "Windows");
+        assert_eq!(session_kind(Some("Ubuntu")), "WSL");
     }
 
     #[test]

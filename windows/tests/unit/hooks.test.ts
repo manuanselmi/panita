@@ -528,27 +528,35 @@ describe("Open", () => {
   it("↗ on the left card opens the primary session", async () => {
     const { open } = await three();
     open.openPrimary();
-    expect(bridge.Bridge.openSession).toHaveBeenCalledExactlyOnceWith(String.raw`C:\Users\dev\projects\hekta`, null);
+    expect(bridge.Bridge.openSession).toHaveBeenCalledExactlyOnceWith(String.raw`C:\Users\dev\projects\hekta`, null, "h");
   });
 
   it("↗ on the right card opens the second session", async () => {
     const { open } = await three();
     open.openSecond();
-    expect(bridge.Bridge.openSession).toHaveBeenCalledExactlyOnceWith(String.raw`C:\Users\dev\projects\panita`, null);
+    expect(bridge.Bridge.openSession).toHaveBeenCalledExactlyOnceWith(String.raw`C:\Users\dev\projects\panita`, null, "p");
   });
 
   it("a WSL session is opened with its distro", async () => {
     const { State, open } = await three();
     State.select(State.sessions.find((s) => s.name === "struxto")!.id);
     open.openPrimary();
-    expect(bridge.Bridge.openSession).toHaveBeenCalledExactlyOnceWith("/home/me/struxto", "Ubuntu");
+    expect(bridge.Bridge.openSession).toHaveBeenCalledExactlyOnceWith("/home/me/struxto", "Ubuntu", "w");
   });
 
   it("Open terminal on the finished card opens the session that finished", async () => {
     const { send, open } = await three();
     send({ ...from("w", "struxto", { hook_event_name: "Stop" }), cwd: "/home/me/struxto", wsl_distro: "Ubuntu" });
     open.openSubject();
-    expect(bridge.Bridge.openSession).toHaveBeenCalledExactlyOnceWith("/home/me/struxto", "Ubuntu");
+    expect(bridge.Bridge.openSession).toHaveBeenCalledExactlyOnceWith("/home/me/struxto", "Ubuntu", "w");
+  });
+
+  it("a session known only by its folder is opened without a session id", async () => {
+    const { send, open } = await load();
+    send({ hook_event_name: "PreToolUse", cwd: String.raw`C:\p\one`, tool_name: "Bash", tool_input: { command: "x" } });
+    open.openPrimary();
+    // The app finds no terminal to show and goes straight to the window.
+    expect(bridge.Bridge.openSession).toHaveBeenCalledExactlyOnceWith(String.raw`C:\p\one`, null, null);
   });
 
   it("an integration on the left card still opens its own page", async () => {

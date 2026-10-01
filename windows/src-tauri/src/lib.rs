@@ -1,6 +1,10 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
+// Shared with coucou-hook: the process-tree walk (Windows there, Linux here).
+#[path = "../../hook/src/ancestry.rs"]
+mod ancestry;
 mod claude;
+mod extension;
 mod files;
 mod hooks;
 // Shared with coucou-hook so both ends of the relay agree on every name.
@@ -12,9 +16,12 @@ mod log;
 mod pipe;
 mod secrets;
 mod settings;
+mod terminal;
 mod tray;
 mod vscode;
-mod win_user;
+// Shared with coucou-hook: who we are, and who serves a pipe.
+#[path = "../../hook/src/win.rs"]
+mod win;
 mod wsl;
 
 use std::os::windows::process::CommandExt;
@@ -160,13 +167,44 @@ fn open_in_vscode(path: Option<String>) -> bool {
     false
 }
 
-/// "Open" for a Claude Code session: brings its existing VS Code window to the
-/// front — on whichever virtual desktop it is — and only opens the folder when
-/// no window has it (see vscode.rs). `wsl_distro` is the `wsl_distro` field the
-/// relay forwards for sessions running inside WSL; `cwd` is then a Linux path.
+/// "Open" for a Claude Code session: has the companion VS Code extension show
+/// the session's own terminal tab when it can (terminal.rs), then brings its
+/// VS Code window to the front — on whichever virtual desktop it is — and only
+/// opens the folder when no window has it (see vscode.rs). `wsl_distro` is the
+/// `wsl_distro` field the relay forwards for sessions running inside WSL; `cwd`
+/// is then a Linux path. `session_id` is the payload's `session_id`; without
+/// it (or without the extension) this is exactly the window step alone.
 #[tauri::command]
-async fn open_session(cwd: Option<String>, wsl_distro: Option<String>) -> Result<vscode::Outcome, String> {
-    off_main_thread(move || vscode::open_session(cwd, wsl_distro)).await
+async fn open_session(
+    terminals: State<'_, terminal::Terminals>,
+    cwd: Option<String>,
+    wsl_distro: Option<String>,
+    session_id: Option<String>,
+) -> Result<vscode::Outcome, String> {
+    // Input the window step would refuse is refused before anything is asked.
+    let shown = match session_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) if vscode::refusal(cwd.as_deref(), wsl_distro.as_deref()).is_none() => {
+            let kind = vscode::session_kind(wsl_distro.as_deref());
+            terminal::show_terminal(terminals.hint(id), kind).await
+        }
+        _ => None,
+    };
+    off_main_thread(move || vscode::open_session(cwd, wsl_distro, shown)).await
+}
+
+/// Settings → Claude Code → "VS Code terminal focus": is the companion
+/// extension installed in VS Code (`code --list-extensions`)? Runs VS Code's
+/// CLI, so only when the settings window is shown.
+#[tauri::command]
+async fn vscode_extension_status(app: AppHandle) -> Result<extension::ExtensionStatus, String> {
+    off_main_thread(move || extension::status(&app)).await
+}
+
+/// Installs the bundled extension into VS Code. Only ever called from the
+/// Install / Update button.
+#[tauri::command]
+async fn vscode_extension_install(app: AppHandle) -> Result<String, String> {
+    off_main_thread(move || extension::install(&app)).await?
 }
 
 /// Our own `where`: walks %PATH% against %PATHEXT%, no shell involved.
@@ -469,6 +507,7 @@ pub fn run() {
             gate: gate.clone(),
         })
         .manage(Pending::default())
+        .manage(terminal::Terminals::default())
         .manage(Chat::default())
         .invoke_handler(tauri::generate_handler![
             boot,
@@ -480,6 +519,8 @@ pub fn run() {
             open_url,
             open_in_vscode,
             open_session,
+            vscode_extension_status,
+            vscode_extension_install,
             quit_app,
             hooks_targets,
             hooks_status,
