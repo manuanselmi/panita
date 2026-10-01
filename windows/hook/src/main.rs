@@ -14,6 +14,9 @@
 //!   asks in the terminal exactly as if Coucou were not installed.
 //!
 //! Usage: `coucou-hook <EventName>` (the name is also read from the JSON).
+//!
+//! With `COUCOU_INSTANCE=<name>` in the environment the relay talks to that
+//! side instance instead of the real app — see instance.rs.
 
 use std::io::{Read, Write};
 use std::sync::mpsc;
@@ -37,15 +40,17 @@ const DROPPED_FIELDS: &[&str] = &["tool_response", "transcript_path"];
 /// less than this anyway.
 const MAX_FIELD_LEN: usize = 2_000;
 
+mod instance;
 mod win;
 
-/// `\\.\pipe\coucou-<sid>`. The SID keeps two accounts on the same machine from
-/// ever meeting on the same pipe; the name falls back to the user name only if
-/// the SID cannot be read at all, which should not happen.
+/// `\\.\pipe\coucou-<sid>` (or `coucou-<instance>-<sid>`, see instance.rs). The
+/// SID keeps two accounts on the same machine from ever meeting on the same
+/// pipe; the name falls back to the user name only if the SID cannot be read at
+/// all, which should not happen.
 fn pipe_path() -> String {
     let key = win::current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
-    format!(r"\\.\pipe\coucou-{key}")
+    instance::pipe_name(&key)
 }
 
 /// Opens the pipe. Retries only while the server is busy: any other error means
@@ -72,6 +77,11 @@ fn connect() -> Option<std::fs::File> {
 }
 
 fn main() {
+    // A COUCOU_INSTANCE we cannot use means somebody meant a side instance; the
+    // one thing we must not do is fall back to the real app. Say nothing instead.
+    if instance::current().is_err() {
+        std::process::exit(0);
+    }
     let Some((payload, event)) = read_event() else { std::process::exit(0) };
 
     let waits_for_answer = event == "PermissionRequest";

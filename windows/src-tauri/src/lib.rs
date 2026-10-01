@@ -3,6 +3,9 @@
 mod claude;
 mod files;
 mod hooks;
+// Shared with coucou-hook so both ends of the relay agree on every name.
+#[path = "../../hook/src/instance.rs"]
+mod instance;
 mod integrations;
 mod island;
 mod log;
@@ -191,9 +194,28 @@ fn hooks_status() -> HookStatus {
     hooks::status()
 }
 
+/// A side instance (COUCOU_INSTANCE, see instance.rs) shares
+/// ~/.claude/settings.json with the real install, and every Coucou entry in it
+/// looks the same: installing from here would replace the real install's hooks
+/// with this instance's relay, and uninstalling would remove them. Refused.
+fn refuse_hooks_in_side_instance() -> Result<(), String> {
+    let name = match instance::current() {
+        Ok(None) => return Ok(()),
+        Ok(Some(name)) => name,
+        Err(err) => return Err(err),
+    };
+    let var = instance::ENV_VAR;
+    Err(format!(
+        "This is the side instance \"{name}\" ({var}): it never edits ~/.claude/settings.json, \
+         which belongs to the real install. To send a Claude Code session here, start \
+         Claude Code with {var}={name} instead."
+    ))
+}
+
 /// Returns the diff the user has to look at before anything is written.
 #[tauri::command]
 fn hooks_preview(install: bool) -> Result<HookPreview, String> {
+    refuse_hooks_in_side_instance()?;
     hooks::preview(install)
 }
 
@@ -205,6 +227,7 @@ fn hooks_apply(
     install: bool,
     fingerprint: String,
 ) -> Result<String, String> {
+    refuse_hooks_in_side_instance()?;
     // The fingerprint comes from the preview the user actually looked at, so a
     // settings.json that changed in between is refused rather than overwritten.
     let backup = hooks::write(install, &fingerprint)?;
@@ -366,6 +389,28 @@ fn open_settings_window(app: AppHandle) {
 }
 
 pub fn run() {
+    // Before anything touches a path: which install are we? See instance.rs.
+    let instance = match instance::current() {
+        Ok(instance) => instance,
+        Err(err) => {
+            // Falling back to the real install is exactly what must not happen.
+            eprintln!("[coucou] {err} — not starting.");
+            std::process::exit(2);
+        }
+    };
+
+    let mut context = tauri::generate_context!();
+    if let Some(name) = instance.as_deref() {
+        // The single-instance mutex and the WebView2 profile are both derived
+        // from the identifier, and the autostart entry from the product name.
+        // Sharing any of them with the real install would hand our launch to it,
+        // mix the two browser profiles, or rewrite its autostart entry.
+        // fr.louisraille.coucou.dev, Coucou-dev.
+        let identifier = &mut context.config_mut().identifier;
+        identifier.push_str(&instance::suffix_for(Some(name), '.'));
+        context.package_info_mut().name.push_str(&instance::suffix_for(Some(name), '-'));
+    }
+
     let loaded = settings::load();
     let gate = Arc::new(PollGate::new());
 
@@ -423,12 +468,18 @@ pub fn run() {
             gate.set_active(true);
             island::spawn_cursor_poll(handle.clone(), gate.clone());
 
-            log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));
+            match instance.as_deref() {
+                None => log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION"))),
+                Some(name) => log::line(format!(
+                    "--- Coucou {} started (instance {name}) ---",
+                    env!("CARGO_PKG_VERSION")
+                )),
+            }
             hooks::ensure_hook_exe(&handle);
             pipe::start(handle.clone());
             integrations::start(handle.clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running Coucou");
 }

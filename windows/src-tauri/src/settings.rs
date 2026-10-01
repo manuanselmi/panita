@@ -1,5 +1,7 @@
 // Preferences, stored as plain JSON in %APPDATA%\Coucou\settings.json.
 // No secret ever lands here — API keys live in the Windows Credential Manager.
+// A side instance (COUCOU_INSTANCE, see instance.rs) uses Coucou-<instance>
+// for both folders below instead.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -47,12 +49,17 @@ impl Default for Settings {
     }
 }
 
+/// `Coucou`, or `Coucou-<instance>` for a side instance (see instance.rs).
+fn folder_name() -> String {
+    format!("Coucou{}", crate::instance::suffix('-'))
+}
+
 /// %APPDATA%\Coucou
 pub fn config_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("Coucou")
+    base.join(folder_name())
 }
 
 /// %LOCALAPPDATA%\Coucou — where coucou-hook.exe and the log live.
@@ -60,7 +67,7 @@ pub fn local_dir() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("Coucou")
+    base.join(folder_name())
 }
 
 pub fn hook_exe_path() -> PathBuf {

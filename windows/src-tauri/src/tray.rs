@@ -16,8 +16,15 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 
     let menu = Menu::with_items(app, &[&open, &sep1, &settings, &pause, &sep2, &quit])?;
 
+    // A side instance (instance.rs) puts a second, identical Mochi in the
+    // notification area; the tooltip is how you tell which one you are quitting.
+    let tooltip = match crate::instance::current() {
+        Ok(Some(name)) => format!("Coucou ({name})"),
+        _ => "Coucou".to_string(),
+    };
+
     let mut builder = TrayIconBuilder::with_id("coucou")
-        .tooltip("Coucou")
+        .tooltip(tooltip)
         .menu(&menu)
         .on_menu_event(|app: &AppHandle, event| match event.id.as_ref() {
             "quit" => app.exit(0),
