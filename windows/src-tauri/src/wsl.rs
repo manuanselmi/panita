@@ -302,11 +302,6 @@ pub fn sh_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// The hook command for one event, as written into a distro's settings.json.
-pub fn hook_command(relay_linux: &str, event: &str) -> String {
-    format!("{} {event} {DISTRO_ARG}", sh_quote(relay_linux))
-}
-
 // ── Running wsl.exe ───────────────────────────────────────────────────────────
 
 struct Output {
@@ -474,13 +469,5 @@ mod tests {
         let home = unc_path(&first.name, &probe.home).unwrap();
         eprintln!("home from Windows: {} (exists: {})", home.display(), home.is_dir());
         assert!(home.is_dir());
-    }
-
-    #[test]
-    fn the_wsl_hook_command_reads_like_this() {
-        assert_eq!(
-            hook_command("/mnt/c/Users/John Smith/AppData/Local/Coucou/bin/coucou-hook.exe", "PreToolUse"),
-            r#"'/mnt/c/Users/John Smith/AppData/Local/Coucou/bin/coucou-hook.exe' PreToolUse --wsl-distro "$WSL_DISTRO_NAME""#
-        );
     }
 }
