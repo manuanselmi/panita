@@ -11,3 +11,6 @@ src-tauri/gen/schemas/
 .env
 .env.*
 !.env.example
+
+# Screenshots, logs and app output from the test suites (TESTING.md)
+test-results/

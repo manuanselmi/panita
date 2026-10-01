@@ -14,7 +14,8 @@
     "pack": "tauri build && node scripts/pack.mjs",
     "test": "npm run test:rust && npm run test:unit",
     "test:rust": "cargo build --release -p coucou-hook && cargo test --workspace",
-    "test:unit": "tsc -p tests && vitest run"
+    "test:unit": "tsc -p tests && vitest run",
+    "test:e2e": "vitest run -c vitest.e2e.config.ts"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
