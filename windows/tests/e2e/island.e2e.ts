@@ -176,6 +176,16 @@ describe(`side instance "${INSTANCE}"`, () => {
     }
   });
 
+  it("the ticker keeps up past twenty steps", async () => {
+    // A session keeps its last 20 steps; the ticker used to count by that list
+    // and froze on the twentieth step of every long session.
+    for (let n = 1; n <= 23; n++) {
+      const run = await runHook("PreToolUse", base({ tool_name: "Bash", tool_input: { command: `count-${n}` } }));
+      expect(run).toMatchObject({ code: 0, stdout: "" });
+    }
+    await waitFor("the ticker to show the 23rd step", async () => (await page.tickerText()).includes("count-23"), 10_000);
+  });
+
   it("PermissionRequest → Allow prints the documented allow JSON", async () => {
     const from = readSideLog().length;
     const hook = runHook("PermissionRequest", permission("rm -rf ./build-e2e"));

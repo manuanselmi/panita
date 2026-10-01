@@ -81,7 +81,8 @@ export class Ticker {
   private c = makeRow(); // incoming
   private queue: string[] = [];
   private startMs: number | null = null;
-  private displayIndex = -1;
+  /** The task's stepTotal as of the last sync; -1 before the first one. */
+  private shownTotal = -1;
 
   constructor() {
     this.el = h("div", { class: "ticker" }, this.a.el, this.b.el, this.c.el);
@@ -99,32 +100,33 @@ export class Ticker {
     return this.startMs != null || this.queue.length > 0;
   }
 
+  /** Forget the task shown so far: the next sync drops straight into place. */
+  reset() {
+    this.shownTotal = -1;
+  }
+
   sync(task: AgentTask | null) {
-    const steps = task && task.steps.length > 0 ? task.steps : ["…"];
-    const idx = task ? Math.min(task.stepIndex, steps.length - 1) : -1;
+    const steps = task?.steps ?? [];
+    // Counted with stepTotal, not with the list: the list keeps only the last 20
+    // steps, so past twenty its length and stepIndex stop moving, and the ticker
+    // used to freeze on the twentieth step of every long session.
+    const total = task?.stepTotal ?? 0;
 
-    // First render: drop straight into place, no animation.
-    if (this.displayIndex < 0) {
-      this.displayIndex = idx;
-      setText(this.a, idx > 0 ? steps[idx - 1] : "…");
-      setText(this.b, steps[Math.max(idx, 0)]);
-      this.rest();
-      return;
-    }
-
-    // The session restarted (steps were cleared): re-seed rather than scroll.
-    if (idx < this.displayIndex) {
+    // First render, a different task, or the steps were cleared: drop straight
+    // into place rather than scroll through steps that belong to nobody here.
+    if (this.shownTotal < 0 || total < this.shownTotal) {
       this.queue = [];
       this.startMs = null;
-      this.displayIndex = idx;
-      setText(this.a, idx > 0 ? steps[idx - 1] : "…");
-      setText(this.b, steps[Math.max(idx, 0)]);
+      this.shownTotal = total;
+      setText(this.a, steps.at(-2) ?? "…");
+      setText(this.b, steps.at(-1) ?? "…");
       this.rest();
       return;
     }
 
-    for (let i = this.displayIndex + 1; i <= idx; i++) this.queue.push(steps[i]);
-    this.displayIndex = idx;
+    const fresh = Math.min(total - this.shownTotal, steps.length);
+    if (fresh > 0) this.queue.push(...steps.slice(-fresh));
+    this.shownTotal = total;
     if (this.queue.length > MAX_QUEUE) {
       this.queue = this.queue.slice(-MAX_QUEUE);
     }

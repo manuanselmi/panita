@@ -145,12 +145,14 @@ describe("focus and tasks", () => {
     expect(State.effectiveState).toBe("dizzy");
   });
 
-  it("keeps the last 20 steps and points at the newest", () => {
+  it("keeps the last 20 steps, points at the newest, and counts them all", () => {
     for (let i = 1; i <= 25; i++) State.appendStep("integration_claude", `step ${i}`);
     const claude = State.tasks[0];
     expect(claude.steps).toHaveLength(20);
     expect(claude.steps[0]).toBe("step 6");
     expect(claude.stepIndex).toBe(19);
+    // What the ticker counts by: the list stops growing, this does not.
+    expect(claude.stepTotal).toBe(25);
   });
 
   it("notifies subscribers on every change, until they unsubscribe", () => {

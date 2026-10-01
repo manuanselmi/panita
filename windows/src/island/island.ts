@@ -718,11 +718,15 @@ export class Island {
     // spends most of its life in. Geometry still has to finish retracting.
     const settling =
       this.width.animating || this.height.animating || this.radius.animating;
+    // The view's own animation counts too: the ticker scrolls on this loop, and
+    // in states where Mochi itself holds still ("working") the loop used to stop
+    // with steps still queued, freezing the ticker until the next hook event.
+    const viewBusy = this.views.get(State.view)?.busy?.() ?? false;
     const busy = State.mode === "hidden"
       ? settling
       : settling ||
         !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
-        greetingActive || this.engine.busy || UploadSeq.isActive;
+        greetingActive || this.engine.busy || UploadSeq.isActive || viewBusy;
 
     if (busy) {
       requestAnimationFrame(this.frame);

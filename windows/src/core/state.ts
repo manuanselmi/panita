@@ -12,7 +12,13 @@ export interface AgentTask {
   color: string;
   state: BotStateName;
   stepIndex: number;
+  /** The last 20 steps. */
   steps: string[];
+  /**
+   * Steps ever appended. `steps` stops growing at 20, so its length cannot tell
+   * the ticker that a new step arrived; this count can.
+   */
+  stepTotal: number;
   source: AgentSource;
   isIntegration: boolean;
   emote?: BotEmoteName | null;
@@ -53,7 +59,7 @@ export interface SearchResult {
 const task = (
   id: string, name: string, color: string, source: AgentSource,
 ): AgentTask => ({
-  id, name, color, state: "idle", stepIndex: 0, steps: [], source, isIntegration: true,
+  id, name, color, state: "idle", stepIndex: 0, steps: [], stepTotal: 0, source, isIntegration: true,
 });
 
 /** AgentTask.integrationAgents — same ids, names and colours as macOS. */
@@ -189,6 +195,7 @@ class AppState {
     t.steps.push(step);
     if (t.steps.length > 20) t.steps.shift();
     t.stepIndex = t.steps.length - 1;
+    t.stepTotal += 1;
     this.notify();
   }
 
