@@ -117,6 +117,16 @@ The app icon and the tray icon are drawn in code, like Mochi itself:
 npm run icons          # regenerates src-tauri/icons from scripts/gen-icons.mjs
 ```
 
+### Tests
+
+```powershell
+npm test               # Rust and TypeScript unit tests
+npm run test:e2e       # the real relay, app and island, driven over CDP
+```
+
+Both are safe to run with Coucou installed and running: the end-to-end suite
+runs its own isolated instance (`COUCOU_INSTANCE`). See [TESTING.md](TESTING.md).
+
 ### Layout
 
 ```
@@ -128,6 +138,7 @@ windows/
     settings/          the settings window
   src-tauri/           Rust backend: window, named pipe, Claude API, pollers
   hook/                coucou-hook.exe, the Claude Code relay
+  tests/               unit, end-to-end and real-input tests (TESTING.md)
   scripts/             icon generator
 ```
 
