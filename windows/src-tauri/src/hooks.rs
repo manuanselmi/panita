@@ -211,6 +211,8 @@ pub struct Location {
     relay: String,
     /// What follows the event name: nothing on Windows, the distro on WSL.
     tail: String,
+    /// A distro's file, reached through the WSL share (see `refuse_links`).
+    via_wsl: bool,
 }
 
 impl Location {
@@ -223,6 +225,7 @@ impl Location {
             relay_path: relay_exe.to_string_lossy().to_string(),
             relay: format!("\"{exe}\""),
             tail: String::new(),
+            via_wsl: false,
         }
     }
 
@@ -233,6 +236,7 @@ impl Location {
             relay_path: relay_linux.to_string(),
             relay: wsl::sh_quote(relay_linux),
             tail: format!(" {}", wsl::DISTRO_ARG),
+            via_wsl: true,
         }
     }
 
@@ -414,20 +418,47 @@ fn current_bytes(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap_or_default()
 }
 
+/// `FILE_ATTRIBUTE_REPARSE_POINT`.
+const REPARSE_POINT: u32 = 0x400;
+
 /// A settings.json that is a symbolic link (a dotfiles repo, typically) would
 /// be replaced by a plain file by the write-and-rename below, silently cutting
 /// it loose from wherever it points. Refused instead.
-fn refuse_symlink(path: &Path) -> Result<(), String> {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => Err(format!(
-            "{} is a symbolic link. Coucou won't replace it with a plain file — add the hooks to the file it points to by hand, or replace the link first.",
-            path.display()
-        )),
+///
+/// Through `\\wsl.localhost` it is worse: Windows cannot follow a Linux
+/// symlink at all, so reading one fails as "not found" — which would read as
+/// "no settings yet", and the write would put a file holding nothing but
+/// Coucou's hooks where the link was. Over the WSL share every reparse point
+/// (that is how Linux links and special files show up) is refused, for the
+/// file and for the `.claude` folder above it. On Windows only real links are:
+/// OneDrive placeholders are reparse points too, and perfectly writable.
+fn refuse_links(at: &Location) -> Result<(), String> {
+    use std::os::windows::fs::MetadataExt;
+    let check = |path: &Path| match std::fs::symlink_metadata(path) {
+        Ok(meta)
+            if meta.file_type().is_symlink()
+                || (at.via_wsl && meta.file_attributes() & REPARSE_POINT != 0) =>
+        {
+            Err(format!(
+                "{} is a symbolic link. Coucou won't replace it with a plain file — add the hooks to the file it points to by hand, or replace the link first.",
+                path.display()
+            ))
+        }
         _ => Ok(()),
+    };
+    check(&at.settings)?;
+    if at.via_wsl {
+        if let Some(dir) = at.settings.parent() {
+            check(dir)?;
+        }
     }
+    Ok(())
 }
 
 pub fn status_at(at: &Location) -> (bool, Option<String>) {
+    if let Err(err) = refuse_links(at) {
+        return (false, Some(err));
+    }
     match read_settings(&at.settings) {
         Ok(v) => (is_installed(&v), None),
         Err(err) => (false, Some(err)),
@@ -435,7 +466,7 @@ pub fn status_at(at: &Location) -> (bool, Option<String>) {
 }
 
 pub fn preview_at(at: &Location, install: bool) -> Result<HookPreview, String> {
-    refuse_symlink(&at.settings)?;
+    refuse_links(at)?;
     let current = read_settings(&at.settings)?;
     let next = next_settings(&current, at, install);
     Ok(HookPreview {
@@ -454,7 +485,7 @@ pub fn preview_at(at: &Location, install: bool) -> Result<HookPreview, String> {
 /// installing the hooks is silently reverting somebody else's edit.
 pub fn write_at(at: &Location, install: bool, fingerprint: &str) -> Result<String, String> {
     let path = &at.settings;
-    refuse_symlink(path)?;
+    refuse_links(at)?;
 
     // Read before the backup: an unreadable file must abort before we touch
     // anything at all.
@@ -682,6 +713,7 @@ fn unified_diff(before: &str, after: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     const WHERE: &str = "settings.json";
 
@@ -938,6 +970,60 @@ mod tests {
 
             let _ = std::fs::remove_dir_all(&home);
         }
+    }
+
+    /// The real targets on this machine, read-only: lists them and reads each
+    /// one's status — including a running distro's real settings.json through
+    /// `\\wsl.localhost`. Nothing is written. Ignored by default (needs a real
+    /// home, and WSL for the distro rows):
+    /// `cargo test -p coucou --lib -- --ignored --nocapture live_status`.
+    #[test]
+    #[ignore]
+    fn live_status_of_every_target_read_only() {
+        for info in targets() {
+            let target = Target::parse(Some(&info.id)).unwrap();
+            let status = status_of(&target, false);
+            eprintln!("{status:?}");
+            assert!(status.error.is_none(), "{}: {:?}", info.id, status.error);
+        }
+    }
+
+    /// Through the WSL share a link cannot be followed, so a `.claude` folder
+    /// that is any kind of reparse point is refused there; on Windows a
+    /// junctioned `.claude` is an ordinary place to write. A junction needs no
+    /// privilege to create, unlike a symlink.
+    #[test]
+    fn a_linked_claude_folder_is_refused_through_wsl_only() {
+        let home = sandbox("junction");
+        let _ = std::fs::remove_dir_all(home.join(".claude"));
+        let real = home.join("real-claude");
+        std::fs::create_dir_all(&real).unwrap();
+        let made = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(home.join(".claude"))
+            .arg(&real)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !made {
+            eprintln!("could not create a junction here — link check not exercised");
+            let _ = std::fs::remove_dir_all(&home);
+            return;
+        }
+
+        let wsl = wsl_at(&home);
+        assert!(preview_at(&wsl, true).unwrap_err().contains("symbolic link"));
+        assert!(write_at(&wsl, true, "x").unwrap_err().contains("symbolic link"));
+        assert!(status_at(&wsl).1.unwrap().contains("symbolic link"));
+
+        let win = windows_at(&home);
+        let plan = preview_at(&win, true).expect("a junctioned .claude is fine on Windows");
+        write_at(&win, true, &plan.fingerprint).unwrap();
+        assert!(real.join("settings.json").is_file(), "written through the junction");
+
+        // Remove the junction itself, never what it points to.
+        let _ = std::fs::remove_dir(home.join(".claude"));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
