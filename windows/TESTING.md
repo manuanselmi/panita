@@ -168,7 +168,10 @@ The suite enforces, rather than trusts, that it stays away from the real install
 - it only stops a process it started, after re-checking that its executable is
   `target/debug/coucou.exe` — never by name — and only deletes folders named
   exactly `Coucou-<instance>` / `fr.louisraille.coucou.<instance>` under
-  `%LOCALAPPDATA%` / `%APPDATA%`;
+  `%LOCALAPPDATA%` / `%APPDATA%` — and never while any app still serves that
+  instance's pipe. Two checkouts running the suite at once under the same name
+  (two worktrees, say) would otherwise wipe each other's log and settings
+  mid-run; give each its own `COUCOU_E2E_INSTANCE`;
 - it refuses binaries without side-instance support;
 - it only ever *lists* named pipes: `stat`/`existsSync` on a pipe path opens a
   connection to whoever serves it;

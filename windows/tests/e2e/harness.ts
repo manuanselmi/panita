@@ -11,7 +11,9 @@
 //   * Only ever stop a process this suite started, and only after checking its
 //     executable is the dev build in target/debug — never by name.
 //   * Only ever delete the side instance's own folders (`Coucou-<instance>`,
-//     `fr.louisraille.coucou.<instance>`), checked by exact name and parent.
+//     `fr.louisraille.coucou.<instance>`), checked by exact name and parent —
+//     and never while any app serves that instance's pipe: another checkout may
+//     be running the suite under the same name (COUCOU_E2E_INSTANCE avoids it).
 //   * Never open the real relay pipe. Pipes are only *listed*: `fs.existsSync`
 //     or `stat` on a pipe path would connect to whoever serves it.
 //   * Refuse to launch binaries that do not know about COUCOU_INSTANCE: an old
@@ -227,8 +229,28 @@ function removeSideDir(dir: string) {
   fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
 }
 
-export function removeSideDirs() {
+/**
+ * True while an app serves this side instance's pipe — this run's, or another
+ * run's: two checkouts running the suite at once with the same instance name.
+ */
+export function sideInstanceRunning(): boolean {
+  return pipeNames().some((name) => name.startsWith(`coucou-${INSTANCE}-`));
+}
+
+/**
+ * Deletes the side instance's folders — unless an app is still serving its
+ * pipe. Then they belong to a run in progress (this one's app failed to quit,
+ * or another checkout is running the suite under the same name), and wiping
+ * them would pull its log and settings out from under it. Returns whether it
+ * deleted them.
+ */
+export function removeSideDirs(): boolean {
+  if (sideInstanceRunning()) {
+    console.warn(`[e2e] a "${INSTANCE}" instance is still running; its folders are left alone`);
+    return false;
+  }
   for (const dir of [side.localDir, side.configDir, side.webviewDir]) removeSideDir(dir);
+  return true;
 }
 
 export function sideDirsLeft(): string[] {
@@ -303,7 +325,7 @@ export async function launchApp(sid: string): Promise<RunningApp> {
     );
   }
 
-  removeSideDirs();
+  if (!removeSideDirs()) throw new Error(`a "${INSTANCE}" instance appeared while launching; not starting another`);
   writeSideSettings();
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
 
