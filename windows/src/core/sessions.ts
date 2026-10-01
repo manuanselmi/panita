@@ -32,9 +32,6 @@ export const SESSION_DWELL_MS = 2_000;
  */
 export const SESSION_EXPIRY_MS = 60 * 60_000;
 
-/** At most this many panitas (mini Mochis) in a row; the rest are a "+N". */
-export const PANITA_CAP = 3;
-
 /**
  * Session colours. All of them read on the black island and on the #141518
  * card, at dot size and as a mini Mochi body; neighbouring entries are far apart
@@ -100,6 +97,55 @@ export function orderSessions<T extends { id: string; lastActivity: number }>(
 
 export function sameOrder(a: readonly { id: string }[], b: readonly { id: string }[]): boolean {
   return a.length === b.length && a.every((t, i) => t.id === b[i].id);
+}
+
+// ── Telling same-name sessions apart ─────────────────────────────────────────
+//
+// A session is named after its folder, and several sessions in one project —
+// three terminals on `struxto-especificador`, say — would all read the same.
+// Each session gets a number when it is created: the smallest one no live
+// session of that name holds. The first is shown bare, the others with their
+// number: "struxto-especificador", "struxto-especificador 2", "… 3".
+//
+// The number is the session's for its whole life, so a label never jumps from
+// one live session to another: if the first one ends, the second stays "… 2"
+// (alone, it is still told apart from the one that ended), and the next new
+// session takes the free number — bare again. While none ends in between, the
+// numbers follow the order of creation.
+
+/** The number a new session called `name` gets, given the sessions alive now. */
+export function pickOrdinal(
+  name: string,
+  live: readonly { name: string; ordinal: number }[],
+): number {
+  const taken = new Set(live.filter((s) => s.name === name).map((s) => s.ordinal));
+  let n = 1;
+  while (taken.has(n)) n++;
+  return n;
+}
+
+/**
+ * A task's label in two parts: the name, which may be cut with "…" to fit, and
+ * the suffix (" 2"), which must stay readable. Integrations have no number.
+ */
+export function labelParts(task: { name: string; ordinal?: number }): { name: string; suffix: string } {
+  const n = task.ordinal ?? 1;
+  return { name: task.name, suffix: n > 1 ? ` ${n}` : "" };
+}
+
+/** The label in one string: "struxto-especificador 2". */
+export function displayName(task: { name: string; ordinal?: number }): string {
+  const { name, suffix } = labelParts(task);
+  return name + suffix;
+}
+
+/** Longest first prompt kept for a session's tooltip. */
+export const FIRST_PROMPT_MAX = 80;
+
+/** A prompt as the tooltip shows it: one line, at most FIRST_PROMPT_MAX characters. */
+export function promptSummary(prompt: string): string {
+  const line = prompt.replace(/\s+/g, " ").trim();
+  return line.length <= FIRST_PROMPT_MAX ? line : `${line.slice(0, FIRST_PROMPT_MAX - 1).trimEnd()}…`;
 }
 
 /**

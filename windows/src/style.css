@@ -387,9 +387,9 @@ body {
 
 .overview > .right {
   flex: 1 1 auto;
-  /* A flex item is as wide as its content by default, and the second session's
-     step is one unbreakable line: without this a long command pushed the card
-     past the island's edge instead of ending in "…". */
+  /* A flex item is as wide as its content by default, and a panita's label is
+     one unbreakable line: without this a long name pushed the card past the
+     island's edge instead of ending in "…". */
   min-width: 0;
 }
 
@@ -410,21 +410,55 @@ body {
 .who .name {
   font: 600 12px var(--font);
   color: var(--ink);
+}
+
+/* A task's name and its number ("struxto-especificador 2", views.ts nameEl):
+   when the row is short only the name gives way, with a "…"; the number that
+   tells same-name sessions apart always shows. */
+.label {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
   white-space: nowrap;
+}
+
+.label-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.label-nr {
+  flex: 0 0 auto;
+  /* The number's leading space would vanish at the start of a flex item. */
+  white-space: pre;
+}
+
+/* With several sessions the name is what tells them apart: when the row is
+   short, "Claude Code" gives way first — whole, never as a stray "C…". The slot
+   takes whatever the name and the count leave; the label sits on its first
+   line after a zero-width spacer, and when it does not fit there it wraps to
+   a second line the slot's height hides. */
+.who .tool-slot {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  overflow: hidden;
+}
+
+.who .tool-spacer {
+  width: 0;
+  height: 16px;
+}
+
 .who .tool {
-  font: 400 11px var(--font);
+  flex: 0 0 auto;
+  font: 400 11px/16px var(--font);
   color: var(--dim-2);
   white-space: nowrap;
-  /* With several sessions the name is what tells them apart: when the row is
-     short, "Claude Code" gives way first. */
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex-shrink: 100;
 }
 
 .who .count {
@@ -512,108 +546,36 @@ body {
   }
 }
 
-/* ── Right card: the other sessions ─────────────────────────────────────── */
+/* ── Right card: the panitas ───────────────────────────────────────────── */
 
-/* Sized for the 106 px inside the card: name 16 + step 3+20 + divider 7+1 +
-   panitas 6+20+3+13, from a 10 px top inset like the left card's header. */
+/* Everyone but the left card, in the grid panitaGrid() (layout.ts) picks: one
+   centred row up to three, two rows past that, at most six slots. The card is
+   106 px inside; two rows are 2 × (20 Mochi + 3 + 13 label) + 8 apart. */
 .others {
   position: relative;
   z-index: 1;
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 10px 12px 0 14px;
-}
-
-.second {
-  min-width: 0;
-  cursor: default;
-}
-
-.second-head {
-  height: 16px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  /* Room for the ↗, which sits where the left card's does. */
-  padding-right: 22px;
-}
-
-.second-head .name {
-  font: 600 12px var(--font);
-  color: var(--ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-  transition: color 0.18s;
-}
-
-.second:hover .name {
-  color: #fff;
-}
-
-.second-badge {
-  position: relative;
-  display: inline-grid;
-  flex: 0 0 auto;
-}
-
-.second-badge .pill-badge {
-  position: static;
-}
-
-/* One ticker row, standing still: the current step only. */
-.second-step {
-  height: 20px;
-  margin-top: 3px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.second-step .tick-icon {
-  width: 12px;
-  flex: 0 0 12px;
-  display: grid;
-  place-items: center;
-  color: var(--dim-2);
-}
-
-.second-step .tick-text {
-  display: block;
-  flex: 1 1 auto;
-  min-width: 0;
-  font: 500 13px var(--font);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.others .divider {
-  flex: 0 0 1px;
-  height: 1px;
-  margin-top: 7px;
-  background: rgba(255, 255, 255, 0.06);
+  padding: 0 8px;
 }
 
 .panitas {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  align-items: start;
-  padding-top: 6px;
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-/* Nobody second: the panitas alone, in the middle of the card. */
-.others.alone .panitas {
-  margin: auto 0;
-  padding-top: 0;
+.panita-row {
+  display: flex;
+  justify-content: center;
 }
 
 .panita {
   position: relative;
+  /* Every slot a column of the full grid wide, so a short last row lines up. */
+  flex: 0 0 calc(100% / var(--cols, 3));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -623,19 +585,24 @@ body {
   transition: transform 0.2s cubic-bezier(0.3, 1.2, 0.4, 1);
 }
 
+.panitas[data-rows="1"] .panita {
+  gap: 5px;
+}
+
 .panita:hover {
   transform: scale(1.06);
 }
 
 .panita .lbl {
   max-width: 100%;
-  padding: 0 2px;
+  padding: 0 4px;
   font: 600 10px/13px var(--font);
   color: var(--dim-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   transition: color 0.18s;
+}
+
+.panitas[data-rows="1"] .lbl {
+  font-size: 11px;
 }
 
 .panita:hover .lbl {
@@ -646,6 +613,14 @@ body {
 .panita .pill-badge {
   top: -5px;
   right: calc(50% - 17px);
+}
+
+.panitas[data-rows="1"] .panita .pill-badge {
+  right: calc(50% - 20px);
+}
+
+.panita.more .lbl {
+  visibility: hidden;
 }
 
 .panita .more-disc {
@@ -723,9 +698,18 @@ body {
   color: var(--dim-2);
 }
 
+.who-row {
+  min-width: 0;
+}
+
 .who-row .n {
   font: 600 12px var(--font);
   color: var(--ink);
+}
+
+.who-row .who-label {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .code {
@@ -740,6 +724,33 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   user-select: text;
+}
+
+/* Under the approval card's command: what it does, in a line of Spanish
+   (src/core/explain.ts). Destructive parts in red, with one ⚠ up front. */
+.explain {
+  margin-top: -1px;
+  padding: 0 2px;
+  font: 400 11.5px/15px var(--font);
+  color: #b9bdc4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.explain .sep {
+  color: var(--dim-3);
+}
+
+.explain .warn {
+  color: var(--red-text);
+  font-weight: 600;
+  margin-right: 5px;
+}
+
+.explain .part.danger {
+  color: var(--red-text);
+  font-weight: 500;
 }
 
 .stack {

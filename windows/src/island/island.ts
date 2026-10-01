@@ -21,7 +21,7 @@ import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
-import { openPrimary, openSecond, openSubject } from "./open";
+import { openPrimary, openSubject } from "./open";
 
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
@@ -117,7 +117,6 @@ export class Island {
       // Each "Open" opens the session it sits on (open.ts).
       openTerminal: openSubject,
       openTarget: openPrimary,
-      openSecond,
       openUrl: (url) => {
         if (url) void Bridge.openUrl(url);
       },
@@ -855,15 +854,12 @@ export class Island {
     }
 
     // Compact mini grid: the primary is the Mochi on the left, everyone else —
-    // second session, panitas, then integrations — a mini Mochi in their own
+    // the panitas, sessions then integrations — a mini Mochi in their own
     // colour here, as in the overview. Four cells; past four, three and a "+N".
     const showGrid = State.mode === "compact";
     this.miniGrid.style.opacity = showGrid ? "1" : "0";
     if (showGrid) {
-      const second = State.secondSession;
-      const all = second ? [second, ...State.panitas] : State.panitas;
-      const shown = all.length > 4 ? all.slice(0, 3) : all;
-      const more = all.length - shown.length;
+      const { shown, more } = State.panitaSlots(4);
       const key = shown.map((t) => `${t.id}:${t.color}`).join("|") + `|+${more}`;
       if (this.miniGrid.dataset.key !== key) {
         this.miniGrid.dataset.key = key;

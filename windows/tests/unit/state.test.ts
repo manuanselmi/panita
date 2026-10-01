@@ -1,6 +1,7 @@
 // App state (src/core/state.ts + src/core/sessions.ts): the Claude Code
 // sessions — creation, order, dwell, approval and click promotion, expiry,
-// colours — and the opt-in integrations around them. State is a module
+// colours, same-name numbering — the right card's panitas and their grid
+// (panitaGrid in src/core/layout.ts), and the opt-in integrations around them. State is a module
 // singleton, so every test loads a fresh copy of the module; time is faked, and
 // `window` stands in for the timers State schedules.
 
@@ -18,6 +19,7 @@ const names = (tasks: { name: string }[]) => tasks.map((t) => t.name);
 let State: Mod["State"];
 let DEFAULT_SETTINGS: Mod["DEFAULT_SETTINGS"];
 let sessions: typeof import("../../src/core/sessions");
+let layout: typeof import("../../src/core/layout");
 
 /** A hook event from session `key` in folder …\<name>. */
 const ev = (key: string, name = key, wslDistro: string | null = null) => ({
@@ -39,6 +41,7 @@ beforeEach(async () => {
   vi.useFakeTimers();
   ({ State, DEFAULT_SETTINGS } = await freshState());
   sessions = await import("../../src/core/sessions");
+  layout = await import("../../src/core/layout");
   State.settings.activeIntegrations = [];
 });
 
@@ -73,10 +76,11 @@ describe("sessions: creation", () => {
       steps: [],
       stepTotal: 0,
       isIntegration: false,
+      ordinal: 1,
+      firstPrompt: null,
     });
     expect(sessions.SESSION_COLORS).toContain(s.color);
     expect(State.focusTask).toBe(s);
-    expect(State.secondSession).toBeNull();
     expect(State.panitas).toEqual([]);
   });
 
@@ -109,8 +113,8 @@ describe("sessions: order", () => {
     State.sessionEvent(ev("c"));
     expect(names(State.sessions)).toEqual(["c", "b", "a"]);
     expect(State.focusTask?.name).toBe("c");
-    expect(State.secondSession?.name).toBe("b");
-    expect(names(State.panitas)).toEqual(["a"]);
+    // Everyone else is a panita, in the same order.
+    expect(names(State.panitas)).toEqual(["b", "a"]);
   });
 
   it("holds a new order for the dwell, then catches up without another event", () => {
@@ -212,8 +216,7 @@ describe("sessions: a click on a panita", () => {
     // b led for 0.1 s only; a click does not wait.
     State.select("a");
     expect(State.focusTask?.name).toBe("a");
-    expect(State.secondSession?.name).toBe("c");
-    expect(names(State.panitas)).toEqual(["b"]);
+    expect(names(State.panitas)).toEqual(["c", "b"]);
   });
 
   it("counts as activity: it holds for the dwell, then the newest leads again", () => {
@@ -352,18 +355,62 @@ describe("sessions: colours", () => {
   });
 });
 
-describe("sessions: more than five", () => {
-  it("left card, second session, three panitas and a +N", () => {
-    for (const k of ["a", "b", "c", "d", "e", "f", "g"]) {
+describe("the right card: panitas", () => {
+  const sessionsIn = (keys: string[]) => {
+    for (const k of keys) {
       State.sessionEvent(ev(k));
       tick(sessions.SESSION_DWELL_MS);
     }
+  };
+
+  it("six others fill the six slots", () => {
+    sessionsIn(["a", "b", "c", "d", "e", "f", "g"]);
     expect(State.focusTask?.name).toBe("g");
-    expect(State.secondSession?.name).toBe("f");
-    const row = State.panitaRow();
-    expect(names(row.shown)).toEqual(["e", "d", "c"]);
-    expect(row.more).toBe(2);
-    expect(names(State.panitas)).toEqual(["e", "d", "c", "b", "a"]);
+    const { shown, more } = State.panitaSlots();
+    expect(names(shown)).toEqual(["f", "e", "d", "c", "b", "a"]);
+    expect(more).toBe(0);
+  });
+
+  it("past six, five panitas and the +N in the last slot", () => {
+    sessionsIn(["a", "b", "c", "d", "e", "f", "g", "h"]);
+    const { shown, more } = State.panitaSlots();
+    expect(names(shown)).toEqual(["g", "f", "e", "d", "c"]);
+    expect(more).toBe(2);
+    expect(names(State.panitas)).toEqual(["g", "f", "e", "d", "c", "b", "a"]);
+  });
+
+  it("the compact island's four cells follow the same rule", () => {
+    sessionsIn(["a", "b", "c", "d", "e"]);
+    expect(names(State.panitaSlots(4).shown)).toEqual(["d", "c", "b", "a"]);
+    sessionsIn(["f"]);
+    expect(names(State.panitaSlots(4).shown)).toEqual(["e", "d", "c"]);
+    expect(State.panitaSlots(4).more).toBe(2);
+  });
+
+  it("the grid looks balanced at every count", () => {
+    const grid = (n: number) => {
+      const g = layout.panitaGrid(n);
+      return [g.rows.join("+"), g.cols, g.shown, g.more, g.size];
+    };
+    expect(grid(0)).toEqual(["", 0, 0, 0, 0]);
+    // One row, centred, larger Mochis while everyone fits on it.
+    expect(grid(1)).toEqual(["1", 1, 1, 0, 26]);
+    expect(grid(2)).toEqual(["2", 2, 2, 0, 26]);
+    expect(grid(3)).toEqual(["3", 3, 3, 0, 26]);
+    // Four is a square, not three and an orphan.
+    expect(grid(4)).toEqual(["2+2", 2, 4, 0, 20]);
+    expect(grid(5)).toEqual(["3+2", 3, 5, 0, 20]);
+    expect(grid(6)).toEqual(["3+3", 3, 6, 0, 20]);
+    // Past six: five and the "+N", which takes the sixth slot.
+    expect(grid(7)).toEqual(["3+3", 3, 5, 2, 20]);
+    expect(grid(8)).toEqual(["3+3", 3, 5, 3, 20]);
+    expect(grid(30)).toEqual(["3+3", 3, 5, 25, 20]);
+    for (let n = 1; n <= 30; n++) {
+      const g = layout.panitaGrid(n);
+      expect(g.shown + g.more, `${n}`).toBe(n);
+      expect(g.rows.reduce((a, b) => a + b, 0), `${n}`).toBe(Math.min(n, layout.PANITA_SLOTS));
+      expect(Math.max(...g.rows), `${n}`).toBeLessThanOrEqual(g.cols);
+    }
   });
 
   it("a hidden session can still come forward by itself", () => {
@@ -373,6 +420,78 @@ describe("sessions: more than five", () => {
     }
     State.sessionEvent(ev("a"));
     expect(State.focusTask?.name).toBe("a");
+  });
+});
+
+describe("sessions: same name", () => {
+  /** A session in folder …\<name>, keyed `key`. */
+  const named = (key: string, name: string) => State.sessionEvent(ev(key, name));
+  const labels = () => State.sessions.map((s) => sessions.displayName(s)).sort();
+
+  it("are numbered in order of creation: bare, then 2, 3", () => {
+    const [a, b, c] = ["s1", "s2", "s3"].map((k) => named(k, "struxto-especificador"));
+    expect([a.ordinal, b.ordinal, c.ordinal]).toEqual([1, 2, 3]);
+    expect([a, b, c].map(sessions.displayName)).toEqual([
+      "struxto-especificador",
+      "struxto-especificador 2",
+      "struxto-especificador 3",
+    ]);
+    // Other names count on their own.
+    expect(named("p", "panita").ordinal).toBe(1);
+  });
+
+  it("keep their number for life; a newcomer takes the free one", () => {
+    named("s1", "x");
+    const b = named("s2", "x");
+    named("s3", "x");
+    State.removeSession("s1");
+    for (let i = 0; i < 5; i++) {
+      tick(sessions.SESSION_DWELL_MS);
+      State.sessionEvent(ev("s2", "x"));
+      State.select("s3");
+    }
+    // Alone or not, the second stays "x 2": its label never moves to another session.
+    expect(b.ordinal).toBe(2);
+    expect(labels()).toEqual(["x 2", "x 3"]);
+    expect(named("s4", "x").ordinal).toBe(1);
+    expect(labels()).toEqual(["x", "x 2", "x 3"]);
+    expect(named("s5", "x").ordinal).toBe(4);
+  });
+
+  it("an expired session frees its number too", () => {
+    named("s1", "x");
+    tick(30 * 60_000);
+    named("s2", "x");
+    tick(30 * 60_000);
+    expect(State.sessions.map((s) => s.id)).toEqual(["s2"]);
+    expect(named("s3", "x").ordinal).toBe(1);
+  });
+
+  it("a session named only later (no folder at first) gets a number for that name", () => {
+    named("s1", "x");
+    const late = State.sessionEvent({ key: "s2", sessionId: "s2", cwd: "", name: "Session", wslDistro: null });
+    expect(late.ordinal).toBe(1);
+    State.sessionEvent(ev("s2", "x"));
+    expect(late.name).toBe("x");
+    expect(late.ordinal).toBe(2);
+  });
+
+  it("labels split into a name that may be cut and a number that may not", () => {
+    expect(sessions.labelParts({ name: "struxto-especificador", ordinal: 3 })).toEqual({
+      name: "struxto-especificador",
+      suffix: " 3",
+    });
+    expect(sessions.labelParts({ name: "panita", ordinal: 1 })).toEqual({ name: "panita", suffix: "" });
+    // Integrations have no number.
+    expect(sessions.labelParts({ name: "GitHub" })).toEqual({ name: "GitHub", suffix: "" });
+  });
+
+  it("first prompts are kept as one line of at most 80 characters", () => {
+    expect(sessions.promptSummary("  Arreglá\n\n el   build ")).toBe("Arreglá el build");
+    const long = "x".repeat(200);
+    const summary = sessions.promptSummary(long);
+    expect(summary).toHaveLength(sessions.FIRST_PROMPT_MAX);
+    expect(summary.endsWith("…")).toBe(true);
   });
 });
 
@@ -397,7 +516,7 @@ describe("integrations", () => {
     expect(fresh.defaultView()).toBe("empty");
   });
 
-  it("come after the sessions, in the same row with the same cap", () => {
+  it("come after the sessions, in the same grid with the same cap", () => {
     State.settings.activeIntegrations = ["integration_github", "integration_vercel"];
     State.loadIntegrationTasks();
     for (const k of ["a", "b", "c", "d"]) {
@@ -405,18 +524,17 @@ describe("integrations", () => {
       tick(sessions.SESSION_DWELL_MS);
     }
     expect(State.focusTask?.name).toBe("d");
-    expect(State.secondSession?.name).toBe("c");
-    expect(names(State.panitas)).toEqual(["b", "a", "Vercel", "GitHub"]);
-    const row = State.panitaRow();
-    expect(names(row.shown)).toEqual(["b", "a", "Vercel"]);
-    expect(row.more).toBe(1);
+    expect(names(State.panitas)).toEqual(["c", "b", "a", "Vercel", "GitHub"]);
+    expect(State.panitaSlots().more).toBe(0);
+    const compact = State.panitaSlots(4);
+    expect(names(compact.shown)).toEqual(["c", "b", "a"]);
+    expect(compact.more).toBe(2);
   });
 
   it("with no session, the first integration takes the left card", () => {
     State.settings.activeIntegrations = ["integration_github", "integration_vercel"];
     State.loadIntegrationTasks();
     expect(State.focusTask?.id).toBe("integration_vercel");
-    expect(State.secondSession).toBeNull();
     expect(ids(State.panitas)).toEqual(["integration_github"]);
   });
 
@@ -428,8 +546,8 @@ describe("integrations", () => {
     State.select("integration_github");
     expect(State.focusTask?.id).toBe("integration_github");
     expect(State.tasks[0].pillBadge).toBeNull();
-    // The session is second now, and its activity does not take the card back.
-    expect(State.secondSession?.name).toBe("a");
+    // The session is a panita now, and its activity does not take the card back.
+    expect(names(State.panitas)).toEqual(["a"]);
     tick(5_000);
     State.sessionEvent(ev("a"));
     expect(State.focusTask?.id).toBe("integration_github");

@@ -6,9 +6,9 @@ the fourth moves the mouse and is opt-in.
 
 | Layer | Command | What it covers | Time |
 |---|---|---|---|
-| Rust unit tests | `npm run test:rust` | Relay output JSON and arguments (`--wsl-distro`, `--wsl-ppid`), the relay's ancestry walk (synthetic process tables, and the real one against a Toolhelp snapshot), instance names, pipe naming, the permission decision path, settings.json merging and writing for Windows and WSL targets — including an install that predates `--wsl-ppid` reading as outdated and its update —, WSL helpers (distro names, `wsl -l` decoding, probe parsing, `/proc/<pid>/stat` parsing and the Linux chain, `\wsl.localhost` paths, shell quoting), terminal focus (what is remembered per session, the extension's pipe names, request and reply), the VS Code window matcher and "open" plan (with and without a terminal the extension showed), folder-URI encoding, the extension's status (`code --list-extensions` parsing, versions), window enumeration, file ingest | ~1 min cold, seconds warm |
-| TypeScript unit tests | `npm run test:unit` | `hooks.ts` (step labels, approval target, every hook event → its session, several sessions at once, where each "Open" goes), `state.ts` + `sessions.ts` (session creation, order and its dwell, approval and click promotion, `SessionEnd` and expiry, colours, panitas and "+N", integrations after the sessions, default view), `bridge.ts` (`openSession`, hook-target and extension command names and arguments), the companion VS Code extension (its pipe protocol, terminal matching, malformed input, and its `vscode` glue against a stand-in `vscode` module); type-checks the tests | seconds |
-| End to end | `npm run test:e2e` | The real `coucou-hook.exe` → named pipe → the real app → the island webview and back, driven over CDP — from Windows and from inside WSL — plus the settings window's hook install flow in a sandbox home, and the island's ↗ asking a fake VS Code window for the session's terminal | ~3–5 min cold, ~1–2 min warm |
+| Rust unit tests | `npm run test:rust` | Relay output JSON and arguments (`--wsl-distro`, `--wsl-ppid`), the relay's ancestry walk (synthetic process tables, and the real one against a Toolhelp snapshot), instance names, pipe naming, the permission decision path, settings.json merging and writing for Windows and WSL targets — including an install that predates `--wsl-ppid` reading as outdated and its update —, WSL helpers (distro names, `wsl -l` decoding, probe parsing, `/proc/<pid>/stat` parsing and the Linux chain, `\wsl.localhost` paths, shell quoting), terminal focus (what is remembered per session, the extension's pipe names, request and reply), the VS Code window matcher and "open" plan (with and without a terminal the extension showed), folder-URI encoding, the extension's status (`code --list-extensions` parsing, versions), window enumeration, file ingest, the git branch for the approval card (`git.rs`: parsing, which folders are asked about, the folder passed as an argument of its own, this checkout's branch) | ~1 min cold, seconds warm |
+| TypeScript unit tests | `npm run test:unit` | `hooks.ts` (step labels, approval target, every hook event → its session, several sessions at once, where each "Open" goes, the approval card's explanation and its branch filled in later, first prompts, same-name numbering), `state.ts` + `sessions.ts` + `layout.ts` (session creation, order and its dwell, approval and click promotion, `SessionEnd` and expiry, colours, same-name numbers, the panitas, their grid at every count and the "+N", integrations after the sessions, default view), `explain.ts` (the command dictionary rule by rule, chains, unknown commands, dangerous flags, the branch it may name, the command-line splitter and option reader), `bridge.ts` (`openSession` and hook-target command names and arguments); type-checks the tests, `bridge.ts` (`openSession`, hook-target and extension command names and arguments), the companion VS Code extension (its pipe protocol, terminal matching, malformed input, and its `vscode` glue against a stand-in `vscode` module); type-checks the tests | seconds |
+| End to end | `npm run test:e2e` | The real `coucou-hook.exe` → named pipe → the real app → the island webview and back, driven over CDP — from Windows and from inside WSL — plus the settings window's hook install flow in a sandbox home, and the island's ↗ asking a fake VS Code window for the session's terminal, and the panitas grid, same-name sessions and the approval card's command explanation | ~3–5 min cold, ~1–2 min warm |
 | Real input | `npm run test:input` | Hover-to-reveal, a real click not stealing the foreground. **Moves the mouse** — see below | ~2 min |
 
 `npm test` runs the first two.
@@ -149,6 +149,16 @@ singleton, reloaded for every test. `hooks.ts` is driven exactly as in the app �
 through the `hook` listener it registers — with payloads shaped like the ones
 the relay forwards. No production code was changed to make it testable.
 
+`explain.test.ts` is the approval card's dictionary (`src/core/explain.ts`),
+one table per group of commands — `[command, the line, dangerous?]`, a null
+line meaning no explanation at all. Adding a rule to the dictionary means
+adding its row there. The branch the line may name is tested twice: in
+`explain.test.ts` as plain data (which folders it asks about, what a known
+branch turns the line into), and in `hooks.test.ts` with `Bridge.gitBranch`
+mocked — asked only after the ack, from the right folder (a `cd` in the
+command included, a WSL session's distro), and an answer that arrives after
+the card is gone is dropped.
+
 `bridge.test.ts` tests the bridge itself, with `@tauri-apps/api/core`'s
 `invoke` mocked: the command names and argument keys the Rust side expects
 (`openSession` → `open_session { cwd, wslDistro, sessionId }`, the optional
@@ -214,15 +224,36 @@ What it does, in order:
    - a paused island (the tray's Pause, sent as the same `tray` event) →
      declined at once;
    - `Stop` → the finished card; `SessionEnd` → the session is gone;
-   - **several sessions at once** (six, one of them in WSL): who is on the left
-     card, the second session on the right, the panitas and their "+1", in
-     order of activity; each session's colour never changes and no two are
-     alike; `wsl_distro` survives the relay; a click on a panita takes the left
-     card at once; each ↗ and "Open terminal" opens the session it belongs to;
-     the approval card names the session asking (and its colour) and Allow /
+   - **several sessions at once** (nine, one of them in WSL, one with a name
+     too long for its panita), added one by one: who is on the left card, and
+     the right card's panitas at every count from one to eight others — the
+     rows of the grid (one row up to three, 2 + 2, 3 + 2, 3 + 3), the "+N" in
+     the sixth slot past six, in order of activity, every panita inside the
+     card and every label's number inside its label; each panita's tooltip
+     (name, folder, first prompt); each session's colour never changes and no
+     two are alike up to the palette's eight; `wsl_distro` survives the relay;
+     a click on a panita takes the left card at once; the left card's ↗ and
+     "Open terminal" open the session they belong to, and the right card has
+     no ↗; the approval card names the session asking (and its colour) even
+     when it was behind the "+N", says what the command does, and Allow /
      Deny still answer exactly; another session's request meanwhile is
-     declined and that session badged; the compact island's minis; `SessionEnd`
-     one by one down to the empty card;
+     declined and its panita badged; the compact island's minis; `SessionEnd`
+     one by one down to "No other sessions" and the empty card;
+   - **sessions of one project** (three, then four, in the same folder): numbered
+     in order of creation ("struxto-especificador", "… 2", "… 3"), the number
+     whole when the name is cut, on the left card, the panitas, the approval
+     and the finished card; the numbers stay when one ends, and a newcomer takes
+     the free one;
+   - **the explanation under the command**: approval cards for
+     `git push origin main:dev`, `cd ../x && git commit -m "fix"`, a bare
+     `git push`, `rm -rf build` (flagged), an unknown command (no line), a
+     `Write`, and a long chain (ends in "…" inside the card, its ⚠ still up
+     front) — each card's rows inside it and in order. The branch comes from
+     a real repository the suite makes for it, `test-results\e2e\branch-repo\x`
+     (`git init -b rama-e2e` and one empty commit), so `Commit en "rama-e2e"`
+     proves `git_branch` end to end; with WSL running, `git_branch` is also
+     asked through the distro about the same repository (through `/mnt/c`,
+     read only);
    - `openSession` with input it must refuse (an invalid distro, a Windows path
      for a WSL session, a relative path) → `"failed"` and the matching
      `open session … refused` log line. That proves the command and its
@@ -317,7 +348,9 @@ its settings are never touched. (`COUCOU_E2E_INSTANCE` overrides the name.) Its
 settings are muted, with no integration switched on — the shipped default.
 
 Output lands in `test-results/e2e/` (git-ignored): screenshots of the island at
-each step (transparent PNGs of the 720×320 window), `app-output.log`,
+each step (transparent PNGs of the 720×320 window — `10-sessions-2` to
+`18-sessions-9` for the right card at every count, `20-…` for same-name
+sessions, `30-…` for the explanations), `app-output.log`,
 `side-instance.log` (the side instance's `coucou.log`), `island-console.log`,
 `build.log`, `sandbox-home/` (the settings files the install cases wrote, with
 their backups), `fake-code/` (the fake `code` and every call it got), and
@@ -404,6 +437,8 @@ judge looks. These stay manual (or in the opt-in real-input scaffold):
 - **Look and feel**: Mochi's animations, the island's springs, sounds, and the
   match with `design/captures/`. The screenshots in `test-results/e2e/` are for
   a human to look at; nothing compares pixels.
+- **Tooltips**: the suite reads each panita's `title`, but the native tooltip
+  only appears under a real pointer.
 - **Anything needing real accounts**: the chat (Anthropic API) and the
   integration pollers. A side instance has its own, empty, Credential Manager
   service, so it can neither use nor overwrite the real keys.

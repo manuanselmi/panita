@@ -48,13 +48,33 @@ installs for the current user only — no admin prompt.
 | Tray icon | Open, Settings…, Pause, Quit |
 
 Everything else happens on its own: a Claude Code permission request opens the
-island with **Deny / Allow** and says which session is asking, a finished
-session shows what it did, and every Claude Code session running — Windows or
-WSL — gets its own colour: the most recently active on the left with its
-steps, the next on the right with its current step, the others as small
-coloured Mochis below it (click one to bring it to the left). Integrations are
-off by default; switched on in Settings, they join the small Mochis after the
-sessions.
+island with **Deny / Allow**, says which session is asking, and explains under
+the command what it will do (see below); a finished session shows what it did;
+and every Claude Code session running — Windows or WSL — gets its own colour:
+the most recently active on the left with its steps, every other one as a
+small coloured Mochi — a *panita* — on the right, up to six (past six, the
+last one is a "+N"); click one to bring it to the left. Sessions in the same
+project are numbered in the order they started — `struxto-especificador`,
+`struxto-especificador 2`, `… 3` — and keep their number while they live;
+hovering a panita shows its folder and the first thing it was asked.
+Integrations are off by default; switched on in Settings, they join the
+panitas after the sessions.
+
+### What a command does
+
+Under the command on the approval card, a short line in Spanish says what it
+does — `Push de "main" a "dev"`, `Moverse a "x" → Commit en "dev": "fix"`,
+`Eliminar "build" y todo su contenido` — with destructive actions in red and a
+⚠. The branch of a commit or push is asked of git (`git rev-parse --abbrev-ref
+HEAD` in the session's folder, or inside its WSL distro) once the card is up,
+and fills in when it arrives; until then, or if git has no answer, it says
+"la rama actual". A command it does not know gets no line rather than a guess.
+
+The dictionary lives in [`src/core/explain.ts`](src/core/explain.ts): an
+ordered list of rules (git, files and folders, npm/pnpm/yarn/pip/cargo/docker,
+curl/wget, processes; chains of them with `&&`, `;`, `|`), plus one line for
+the other tools (`Write`, `Edit`, `WebFetch`…). How to add a rule is written at
+the top of that file; each rule has its row in `tests/unit/explain.test.ts`.
 
 ## Claude Code
 

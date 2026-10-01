@@ -69,7 +69,11 @@ export const WAKE_STRIP_H = 6;
 export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   overview: { height: 160, botX: 68, botY: null, botDiameter: 58, agentMode: "pills" },
   empty: { height: 160, botX: 70, botY: null, botDiameter: 62, agentMode: "none" },
-  approval: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
+  // 16 px taller than the other cards: under the command sits a one-line
+  // explanation of it (src/core/explain.ts). At 160 the four rows — who, the
+  // command, the explanation, the buttons — touched each other and the card's
+  // edges.
+  approval: { height: 176, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
   question: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
   error: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   finished: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
@@ -87,6 +91,49 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   settings: { height: 160, botX: 54, botY: null, botDiameter: 46, agentMode: "none" },
   greeting: { height: 150, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
 };
+
+// ── The overview's right card: the panitas ───────────────────────────────────
+
+/**
+ * Slots in the right card: a 3×2 grid. Past six panitas, the sixth slot is a
+ * "+N" for the rest. Six keeps a label legible — about fifteen characters at
+ * 90 px a slot; a 4×2 grid left room for nine, too few for project names.
+ */
+export const PANITA_SLOTS = 6;
+
+/** How the right card lays out `count` panitas. */
+export interface PanitaGrid {
+  /** Slots per row, top to bottom — each row centred on its own. */
+  rows: number[];
+  /** Slots a full row is divided into: a short last row keeps the same slot width. */
+  cols: number;
+  /** Panitas drawn; the rest, `more`, are the "+N" in the last slot. */
+  shown: number;
+  more: number;
+  /** Mini Mochi body, px: larger while everyone fits on one row. */
+  size: number;
+}
+
+/**
+ * The grid for `count` panitas, chosen to look balanced at every count rather
+ * than filling a fixed grid from the top-left:
+ *
+ *   1–3 → one row, vertically centred, larger Mochis (each slot is a third, a
+ *         half or all of the card, so a lone name has room to show in full);
+ *   4   → 2 + 2 (a 3 + 1 grid would leave a hole);
+ *   5   → 3 + 2, the short row centred;
+ *   6   → 3 + 3;
+ *   7+  → 3 + 3 with five panitas and the "+N" in the last slot.
+ */
+export function panitaGrid(count: number): PanitaGrid {
+  const n = Math.max(0, Math.floor(count));
+  if (n === 0) return { rows: [], cols: 0, shown: 0, more: 0, size: 0 };
+  const shown = n <= PANITA_SLOTS ? n : PANITA_SLOTS - 1;
+  const used = Math.min(n, PANITA_SLOTS); // the "+N" takes a slot too
+  if (used <= 3) return { rows: [used], cols: used, shown, more: n - shown, size: 26 };
+  if (used === 4) return { rows: [2, 2], cols: 2, shown, more: n - shown, size: 20 };
+  return { rows: [3, used - 3], cols: 3, shown, more: n - shown, size: 20 };
+}
 
 // The upload views above are only the fallback geometry. Once a file is actually
 // dropped the whole sequence — Mochi included — is drawn by src/upload, which

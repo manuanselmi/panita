@@ -20,6 +20,7 @@ const bridge = vi.hoisted(() => ({
     openSession: vi.fn(async () => "opened"),
     openUrl: vi.fn(),
     openN8n: vi.fn(),
+    gitBranch: vi.fn(async (): Promise<string | null> => null),
   },
 }));
 
@@ -197,6 +198,7 @@ describe("PermissionRequest", () => {
       tool: "Bash",
       command: "Bash · git push",
       session: only(),
+      explanation: { parts: [{ text: "Push de la rama actual", danger: false }], danger: false, branchDirs: [""] },
     });
     expect(State.isPinned).toBe(true);
     expect(only().state).toBe("approval");
@@ -304,6 +306,133 @@ describe("PermissionRequest", () => {
     expect(State.pendingApproval).toBeNull();
     expect(State.sessions).toEqual([]);
     expect(island.alert).not.toHaveBeenCalled();
+  });
+});
+
+describe("the explanation under the command", () => {
+  /** Lets the branch lookups (resolved promises) run. */
+  const settle = async () => {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  };
+  const text = (State: Awaited<ReturnType<typeof load>>["State"]) =>
+    State.pendingApproval?.explanation?.parts.map((p) => p.text).join(" → ") ?? null;
+
+  it("is on the card before the ack goes out, branch or no branch", async () => {
+    const { State, send } = await load();
+    let atAck: string | null = "unset";
+    bridge.Bridge.approvalAck.mockImplementationOnce(() => {
+      atAck = text(State);
+    });
+    send(permission("r-1", "Bash", { command: 'cd ../x && git commit -m "fix"' }));
+    expect(atAck).toBe('Moverse a "x" → Commit en la rama actual: "fix"');
+    // The branch is asked for only after the ack.
+    expect(bridge.Bridge.gitBranch.mock.invocationCallOrder[0]).toBeGreaterThan(
+      bridge.Bridge.approvalAck.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("fills in the branch when it arrives, from the folder the command runs in", async () => {
+    const { State, send } = await load();
+    bridge.Bridge.gitBranch.mockResolvedValueOnce("dev");
+    send(permission("r-1", "Bash", { command: 'cd ../x && git commit -m "fix"' }));
+    expect(bridge.Bridge.gitBranch).toHaveBeenCalledExactlyOnceWith(String.raw`C:\Users\dev\projects\x`, null);
+    await settle();
+    expect(text(State)).toBe('Moverse a "x" → Commit en "dev": "fix"');
+  });
+
+  it("asks a WSL session's distro, with its Linux folder", async () => {
+    const { State, send } = await load();
+    bridge.Bridge.gitBranch.mockResolvedValueOnce("main");
+    send(permission("r-1", "Bash", { command: "git push" }, { cwd: "/home/me/struxto", wsl_distro: "Ubuntu-24.04" }));
+    expect(bridge.Bridge.gitBranch).toHaveBeenCalledExactlyOnceWith("/home/me/struxto", "Ubuntu-24.04");
+    await settle();
+    expect(text(State)).toBe('Push de "main"');
+  });
+
+  it('keeps "la rama actual" when git has no answer, or fails', async () => {
+    const { State, send } = await load();
+    send(permission("r-1", "Bash", { command: "git push" }));
+    await settle();
+    expect(text(State)).toBe("Push de la rama actual");
+
+    const second = await load();
+    bridge.Bridge.gitBranch.mockRejectedValueOnce(new Error("boom"));
+    second.send(permission("r-2", "Bash", { command: "git pull" }));
+    await settle();
+    expect(text(second.State)).toBe("Pull en la rama actual");
+  });
+
+  it("drops an answer that comes after the card is gone", async () => {
+    const { State, send } = await load();
+    let answer: (b: string) => void = () => {};
+    bridge.Bridge.gitBranch.mockImplementationOnce(() => new Promise<string>((r) => (answer = r)));
+    send(permission("r-1", "Bash", { command: "git push" }));
+    const first = State.pendingApproval;
+    State.pendingApproval = null; // answered meanwhile
+    answer("dev");
+    await settle();
+    expect(first?.explanation?.parts[0].text).toBe("Push de la rama actual");
+  });
+
+  it("asks nothing when nothing needs a branch, and has no line for an unknown command", async () => {
+    const { State, send } = await load();
+    send(permission("r-1", "Bash", { command: "rm -rf build" }));
+    expect(bridge.Bridge.gitBranch).not.toHaveBeenCalled();
+    expect(State.pendingApproval?.explanation).toEqual({
+      parts: [{ text: 'Eliminar "build" y todo su contenido', danger: true }],
+      danger: true,
+      branchDirs: [],
+    });
+
+    const again = await load();
+    again.send(permission("r-2", "Bash", { command: "frobnicate --all" }));
+    expect(again.State.pendingApproval?.explanation).toBeNull();
+  });
+
+  it("explains the other tools too", async () => {
+    const { State, send } = await load();
+    send(permission("r-1", "Write", { file_path: String.raw`C:\repo\src\x.ts`, content: "…" }));
+    expect(text(State)).toBe('Escribir el archivo "x.ts"');
+  });
+});
+
+describe("telling sessions of one project apart", () => {
+  it("numbers same-name sessions in order of creation, for life", async () => {
+    const { send, State } = await load();
+    for (const id of ["a", "b", "c"]) send(work(id, "struxto-especificador", "pytest"));
+    const label = (id: string) => {
+      const s = State.sessions.find((x) => x.sessionId === id)!;
+      return s.ordinal > 1 ? `${s.name} ${s.ordinal}` : s.name;
+    };
+    expect(["a", "b", "c"].map(label)).toEqual([
+      "struxto-especificador",
+      "struxto-especificador 2",
+      "struxto-especificador 3",
+    ]);
+    send(from("a", "struxto-especificador", { hook_event_name: "SessionEnd", reason: "exit" }));
+    send(work("d", "struxto-especificador", "ls"));
+    expect(["b", "c", "d"].map(label)).toEqual([
+      "struxto-especificador 2",
+      "struxto-especificador 3",
+      "struxto-especificador",
+    ]);
+  });
+
+  it("keeps a session's first prompt, as one line of at most 80 characters", async () => {
+    const { send, only } = await load();
+    send(from("a", "app", { hook_event_name: "UserPromptSubmit", prompt: `Revisá el\nlogin ${"y ".repeat(60)}` }));
+    send(from("a", "app", { hook_event_name: "UserPromptSubmit", prompt: "otra cosa" }));
+    expect(only().firstPrompt?.startsWith("Revisá el login y y")).toBe(true);
+    expect(only().firstPrompt).toHaveLength(80);
+    expect(only().firstPrompt?.endsWith("…")).toBe(true);
+  });
+
+  it("a blank prompt is not a first prompt", async () => {
+    const { send, only } = await load();
+    send(from("a", "app", { hook_event_name: "UserPromptSubmit", prompt: "   " }));
+    expect(only().firstPrompt).toBeNull();
+    send(from("a", "app", { hook_event_name: "UserPromptSubmit", prompt: "hola" }));
+    expect(only().firstPrompt).toBe("hola");
   });
 });
 
