@@ -61,15 +61,24 @@ export const Bridge = {
   log: (message: string) => call<void>("log_line", { message }),
 
   // ── Claude Code hooks ─────────────────────────────────────────────────────
-  hooksStatus: () => call<HookStatus>("hooks_status"),
-  /** Diff to show before anything is written. `install: false` previews removal. */
-  hooksPreview: (install: boolean) => callOrThrow<HookPreview>("hooks_preview", { install }),
+  // A target is "windows" or "wsl:<distro>"; leaving it out means Windows.
+
+  /** Windows, then each WSL distro. Read from the registry; starts nothing. */
+  hooksTargets: () => call<HookTarget[]>("hooks_targets"),
   /**
-   * Writes ~/.claude/settings.json — only ever after an explicit click, and only
-   * when the file still matches the preview the user looked at.
+   * Whether a target has Coucou's hooks. A stopped WSL distro is only started
+   * to find out when `start` is true; otherwise it comes back `checked: false`.
    */
-  hooksApply: (install: boolean, fingerprint: string) =>
-    callOrThrow<string>("hooks_apply", { install, fingerprint }),
+  hooksStatus: (target?: string, start = false) => call<HookStatus>("hooks_status", { target, start }),
+  /** Diff to show before anything is written. `install: false` previews removal. */
+  hooksPreview: (install: boolean, target?: string) =>
+    callOrThrow<HookPreview>("hooks_preview", { install, target }),
+  /**
+   * Writes that target's ~/.claude/settings.json — only ever after an explicit
+   * click, and only when the file still matches the preview the user looked at.
+   */
+  hooksApply: (install: boolean, fingerprint: string, target?: string) =>
+    callOrThrow<string>("hooks_apply", { install, fingerprint, target }),
 
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
@@ -116,11 +125,27 @@ export interface DroppedFile {
   size: number;
 }
 
+export interface HookTarget {
+  /** "windows" or "wsl:<distro>" — what the hooks* calls take as `target`. */
+  id: string;
+  /** "Windows" or "WSL · <distro>". */
+  label: string;
+  kind: "windows" | "wsl";
+  distro: string | null;
+}
+
 export interface HookStatus {
+  target: string;
+  label: string;
   installed: boolean;
   settingsPath: string;
+  /** The relay as this target runs it: a Windows path, or its Linux path. */
   hookPath: string;
   hookReady: boolean;
+  /** False for a stopped WSL distro that was not started: `installed` is unknown. */
+  checked: boolean;
+  /** Why the target cannot be read right now (WSL unreachable, invalid JSON…). */
+  error: string | null;
 }
 
 export interface HookPreview {
