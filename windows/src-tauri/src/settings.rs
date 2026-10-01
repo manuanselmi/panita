@@ -35,12 +35,10 @@ impl Default for Settings {
             sound_volume: 0.12,
             auto_close_interval: 15.0,
             absence_interval: 180.0,
-            active_integrations: vec![
-                "integration_resend".into(),
-                "integration_n8n".into(),
-                "integration_vercel".into(),
-                "integration_github".into(),
-            ],
+            // None by default in this fork: the island's right card belongs to
+            // the other Claude Code sessions, and an integration is opted into
+            // in Settings. Must match DEFAULT_SETTINGS in src/core/state.ts.
+            active_integrations: vec![],
             screen: "primary".into(),
             autostart: false,
             hooks_installed: false,

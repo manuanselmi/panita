@@ -193,7 +193,7 @@ export class IslandPage {
   }
 
   /**
-   * From here on, every `open_*` command the page sends to Rust (open_in_vscode,
+   * From here on, every `open_*` command the page sends to Rust (open_session,
    * open_url, …) is recorded and answered here instead of reaching the app: a
    * test can click "Open" without a VS Code or Explorer window appearing on the
    * desktop. Everything else still goes through.
@@ -209,6 +209,7 @@ export class IslandPage {
       if (!window.__e2eOpens) {
         window.__e2eOpens = [];
         const realFetch = window.fetch.bind(window);
+        window.__e2eRealFetch = realFetch;
         window.fetch = (input, init) => {
           let url = null;
           try {
@@ -234,6 +235,18 @@ export class IslandPage {
       return answer === false && probe?.cmd === "open_e2e_probe";
     })()`).catch(() => false);
     if (!ok) throw new Error("could not intercept open_* commands; refusing to click any Open button");
+  }
+
+  /**
+   * Undoes interceptOpens(): `open_*` commands reach Rust again. Only for tests
+   * whose calls are refused by Rust before anything opens.
+   */
+  async restoreOpens() {
+    await this.cdp.evaluate(`(() => {
+      if (window.__e2eRealFetch) window.fetch = window.__e2eRealFetch;
+      delete window.__e2eRealFetch;
+      delete window.__e2eOpens;
+    })()`);
   }
 
   /**

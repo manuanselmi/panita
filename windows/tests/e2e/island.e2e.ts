@@ -463,8 +463,8 @@ describe(`side instance "${INSTANCE}"`, () => {
       await page.clickOpen("second");
       const opens = (await page.opens()).slice(before);
       expect(opens).toEqual([
-        { cmd: "open_in_vscode", args: { path: S.hekta.cwd } },
-        { cmd: "open_in_vscode", args: { path: S.sexto.cwd } },
+        { cmd: "open_session", args: { cwd: S.hekta.cwd, wslDistro: null } },
+        { cmd: "open_session", args: { cwd: S.sexto.cwd, wslDistro: null } },
       ]);
     });
 
@@ -525,7 +525,7 @@ describe(`side instance "${INSTANCE}"`, () => {
 
       const before = (await page.opens()).length;
       await page.click("Open terminal");
-      expect((await page.opens()).slice(before)).toEqual([{ cmd: "open_in_vscode", args: { path: S.panita.cwd } }]);
+      expect((await page.opens()).slice(before)).toEqual([{ cmd: "open_session", args: { cwd: S.panita.cwd, wslDistro: null } }]);
     });
 
     it("the compact island shows the other sessions in their colours", async () => {
@@ -574,6 +574,9 @@ describe(`side instance "${INSTANCE}"`, () => {
   // supervised check (TESTING.md).
 
   it("openSession is wired, and refuses what it cannot use without doing anything", async () => {
+    // These calls must reach Rust: lift the open_* interception the session
+    // tests installed. Every input below is refused before anything is opened.
+    await page.restoreOpens();
     const from = readSideLog().length;
     expect(await page.invoke("open_session", { cwd: "relative/dir", wslDistro: "not a distro!" })).toBe("failed");
     await waitForLog(/open session \(WSL\): refused — not a WSL distro name/, 5_000, from);

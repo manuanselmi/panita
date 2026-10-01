@@ -116,7 +116,8 @@ fn title_match(rest: &str, name: &str) -> Option<Strength> {
 ///
 /// Windows: `C:\a\b` → `b`, `a` (the drive is not a folder name);
 /// `\\server\share\a` → `a` (neither is the share); `\\?\` prefixes are
-/// understood. WSL: `/home/u/p` → `p [WSL: d]`, `u [WSL: d]`, `home [WSL: d]`.
+/// understood. WSL: `/home/u/a/p` → `p [WSL: d]`, `a [WSL: d]`. Nothing at or
+/// above a home folder is offered (see `below_home`).
 fn root_names(cwd: &str, wsl_distro: Option<&str>) -> Option<Vec<String>> {
     let plain = |c: &&str| !c.is_empty() && *c != "." && *c != "..";
     match wsl_distro {
@@ -125,7 +126,7 @@ fn root_names(cwd: &str, wsl_distro: Option<&str>) -> Option<Vec<String>> {
                 return None;
             }
             let parts: Vec<&str> = cwd.split('/').filter(plain).collect();
-            Some(parts.iter().rev().map(|p| format!("{p} [WSL: {distro}]")).collect())
+            Some(below_home(parts).iter().rev().map(|p| format!("{p} [WSL: {distro}]")).collect())
         }
         None => {
             let (unc, rest) = if let Some(r) = cwd.strip_prefix(r"\\?\UNC\") {
@@ -151,9 +152,29 @@ fn root_names(cwd: &str, wsl_distro: Option<&str>) -> Option<Vec<String>> {
                 }
                 parts.remove(0);
             }
-            Some(parts.into_iter().filter(plain).rev().map(str::to_string).collect())
+            let parts: Vec<&str> = parts.into_iter().filter(plain).collect();
+            Some(below_home(parts).into_iter().rev().map(str::to_string).collect())
         }
     }
+}
+
+/// Drops the leading folders that are a home folder or above it: `Users\<name>`,
+/// `/home/<name>`, `/root`, and WSL's view of a drive, `/mnt/<letter>`. Walking
+/// up from a session's cwd is meant to find the window whose workspace
+/// *contains* the project (`GitHub` for `GitHub\panita\windows`); past the home
+/// folder the names are generic — the user's own name, `Users`, `home` — and a
+/// window that happens to have a root called like that is someone else's.
+fn below_home(mut parts: Vec<&str>) -> Vec<&str> {
+    let drive = |p: &str| p.len() == 1 && p.as_bytes()[0].is_ascii_alphabetic();
+    if parts.len() >= 2 && parts[0] == "mnt" && drive(parts[1]) {
+        parts.drain(..2);
+    }
+    if parts.len() >= 2 && (parts[0].eq_ignore_ascii_case("Users") || parts[0] == "home") {
+        parts.drain(..2);
+    } else if parts.first() == Some(&"root") {
+        parts.drain(..1);
+    }
+    parts
 }
 
 /// Index into `titles` of the VS Code window for a session in `cwd`.
@@ -702,9 +723,29 @@ mod tests {
         assert_eq!(root_names(r"C:\", None), Some(vec![]));
         assert_eq!(root_names("relative/proj", U), None);
         assert_eq!(
-            root_names("/home/u/./proj/", U),
-            Some(vec!["proj [WSL: Ubuntu-24.04]".into(), "u [WSL: Ubuntu-24.04]".into(), "home [WSL: Ubuntu-24.04]".into()])
+            root_names("/home/u/./work/proj/", U),
+            Some(vec!["proj [WSL: Ubuntu-24.04]".into(), "work [WSL: Ubuntu-24.04]".into()])
         );
+    }
+
+    #[test]
+    fn walking_up_stops_below_the_home_folder() {
+        let cwd = r"C:\Users\manua\Documents\GitHub\panita\windows";
+        assert_eq!(
+            root_names(cwd, None),
+            Some(vec!["windows".into(), "panita".into(), "GitHub".into(), "Documents".into()])
+        );
+        // The workspace that contains the project is still found...
+        assert_eq!(pick(&["x - GitHub - Visual Studio Code"], cwd, None), Some(0));
+        // ...but never a window that merely shares a name with the user folder or above.
+        assert_eq!(pick(&["x - manua - Visual Studio Code", "y - Users - Visual Studio Code"], cwd, None), None);
+        assert_eq!(pick(&["x - u [WSL: Ubuntu-24.04] - Visual Studio Code"], "/home/u/proj", U), None);
+        assert_eq!(pick(&["x - home [WSL: Ubuntu-24.04] - Visual Studio Code"], "/home/u/proj", U), None);
+        assert_eq!(root_names("/root/proj", U), Some(vec!["proj [WSL: Ubuntu-24.04]".into()]));
+        assert_eq!(root_names("/mnt/c/Users/manua/proj", U), Some(vec!["proj [WSL: Ubuntu-24.04]".into()]));
+        assert_eq!(root_names(r"C:\Users\manua", None), Some(vec![]));
+        // Outside a home folder nothing is dropped.
+        assert_eq!(root_names(r"D:\work\proj", None), Some(vec!["proj".into(), "work".into()]));
     }
 
     #[test]
