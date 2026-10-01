@@ -65,14 +65,16 @@ body {
 
 /* ── Island ─────────────────────────────────────────────────────────────── */
 
+/* Its left edge is set from script: the island can be dragged along the top
+   edge, so it is not always centred in the window (islandLeft, layout.ts). */
 #island {
   position: absolute;
   top: 0;
-  left: 50%;
+  left: 0;
   background: #000;
   border-radius: 0 0 14px 14px;
   overflow: visible;
-  will-change: width, height, transform;
+  will-change: width, height, left;
 }
 
 #island-clip {

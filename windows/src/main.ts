@@ -16,9 +16,14 @@ async function main() {
 
   const island = new Island(root);
 
+  // Before boot: boot's value is then never older than the last event.
+  await onEvent<number>("island-anchor", (cx) => island.setAnchor(cx));
+  await onEvent<string>("island-drag", (phase) => island.onDrag(phase));
+
   const boot = await Bridge.boot();
   if (boot) {
     State.settings = { ...State.settings, ...boot.settings };
+    island.setAnchor(boot.islandCx);
   }
   island.applySettings();
   State.loadIntegrationTasks();

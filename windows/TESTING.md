@@ -215,6 +215,10 @@ What it does, in order:
    - `PermissionRequest` → **Allow** (an `element.click()` on the button, not a
      mouse click) → the relay's stdout is exactly the documented
      `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`;
+   - a **double click on the open island's header strip** (a `dblclick` event,
+     no mousedown — that would arm the drag against the real button) folds it
+     to the compact island; on a tab it does not, nor while an approval card
+     waits for its answer (which then still answers);
    - the same with **Deny** and its documented deny JSON;
    - a second request while a card is up → handed straight back (empty stdout,
      `decline` logged), and the first card still answers;
@@ -312,6 +316,10 @@ What it does, in order:
      backup holds the old file, the row says "Installed";
    - no uncaught exception in the island.
 
+   Before the hook events, with no position stored, the window is centred on
+   its display and the island centred in the window (Tauri's own window
+   getters — `outer_position`, `outer_size`, `current_monitor` — and the DOM).
+
    Two things the multi-session tests do to the page, both DOM-level: they
    record and swallow every `open_*` command the page sends, so clicking "Open"
    opens no VS Code or Explorer window. Tauri's `invoke` is read-only, so this
@@ -330,11 +338,19 @@ What it does, in order:
    instance looks for are `coucou-<instance>-vscode-*` — the fake window's.
    Real VS Code windows serve `coucou-vscode-*` (or their own instance's), and
    the suite never connects to any pipe itself.
-5. **Quits the app** the way the tray's Quit does (so its tray icon goes away),
+5. **Launches it again with `islandX: 1`** in its settings — an island the
+   user left against the right edge — and checks the window ends on the
+   display's right edge and the island on the window's, compact and open
+   (the open island grows towards the middle). Then a `save_settings` from the
+   page with `islandX: null` changes the volume but leaves `islandX` alone:
+   only the drag writes it. The drag itself takes the real mouse; its logic
+   (threshold, clamping, the centre's magnet, logical vs physical px) is
+   covered by the Rust unit tests in `island.rs`.
+6. **Quits the app** the way the tray's Quit does (so its tray icon goes away),
    force-kills only if that fails, waits for its WebView2 processes, and
    deletes `%LOCALAPPDATA%\Coucou-e2e`, `%APPDATA%\Coucou-e2e` and
    `%LOCALAPPDATA%\fr.louisraille.coucou.e2e`.
-6. **Checks afterwards** that the side instance is gone, that the relay with
+7. **Checks afterwards** that the side instance is gone, that the relay with
    nobody listening exits at once with empty stdout, and that the real install
    was not touched: same `coucou.exe` processes (debug builds — side instances,
    possibly another checkout's — aside), same pipe, no new
@@ -434,6 +450,11 @@ judge looks. These stay manual (or in the opt-in real-input scaffold):
   choreography in a browser instead.
 - **The tray menu** (a native menu; the suite sends its `pause` event directly).
 - **Multi-monitor placement** and DPI changes.
+- **Dragging the island** along the top edge: a press that travels 4 px turns
+  into a drag (a shorter one is still a click that opens the compact island),
+  the island stops flush at either edge and opens inwards there, snaps to the
+  centre within 24 px of it, and comes back where it was left after Quit and
+  relaunch. The log says `island moved to x=<fraction> of the display`.
 - **Look and feel**: Mochi's animations, the island's springs, sounds, and the
   match with `design/captures/`. The screenshots in `test-results/e2e/` are for
   a human to look at; nothing compares pixels.

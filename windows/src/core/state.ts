@@ -149,6 +149,12 @@ export interface Settings {
   hooksInstalled: boolean;
   /** Claude model used by the chat. */
   model: string;
+  /**
+   * Where the island sits along the top edge, as a fraction of the display's
+   * width; null until it is first dragged. Rust owns it: whatever a page sends
+   * back in save_settings is ignored (src-tauri/src/lib.rs).
+   */
+  islandX?: number | null;
 }
 
 export const DEFAULT_SETTINGS: Settings = {

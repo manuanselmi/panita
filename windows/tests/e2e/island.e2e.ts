@@ -26,6 +26,7 @@ import {
   launchApp,
   pipeNames,
   readSideLog,
+  readSideSettings,
   real,
   realLogSince,
   realPipeName,
@@ -195,6 +196,14 @@ describe(`side instance "${INSTANCE}"`, () => {
     await page.screenshot("01-after-greeting");
   });
 
+  it("with no position stored, the island is centred on its display", async () => {
+    const p = await page.placement();
+    const leftGap = p.window.x - p.monitor.x;
+    const rightGap = p.monitor.x + p.monitor.width - (p.window.x + p.window.width);
+    expect(Math.abs(leftGap - rightGap)).toBeLessThanOrEqual(1);
+    expect(Math.abs(p.island.left + p.island.right - p.viewport)).toBeLessThanOrEqual(1);
+  });
+
   it("forwards work events to the log and the island", async () => {
     const from = readSideLog().length;
     const runs = [
@@ -286,6 +295,32 @@ describe(`side instance "${INSTANCE}"`, () => {
     expect(log).toContain(`hook id=${id} answered allow`);
     await page.waitForView("the card to close", (v) => v.code === null);
     await page.screenshot("04-after-allow");
+  });
+
+  it("a double click on the header strip folds the open island — not on a tab, not over an approval", async () => {
+    // An approval waits on the open island: folding it would leave the relay
+    // waiting on a card nobody can see, so the double click does nothing.
+    const hook = runHook("PermissionRequest", permission("echo fold-e2e"));
+    await page.waitForApproval("Bash · echo fold-e2e");
+    await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
+    await page.dblclickHeader("strip");
+    await sleep(600);
+    expect((await page.settle()).width).toBe(SIZES.expanded.width);
+    expect((await page.activeView())?.code).toBe("Bash · echo fold-e2e");
+    await page.click("Allow");
+    expect((await hook).stdout).toBe(ALLOW_JSON);
+    await page.waitForView("the card to close", (v) => v.code === null);
+
+    // Open with nothing pending: a tab is a button, not the strip.
+    await page.emit("tray", "open");
+    await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
+    await page.dblclickHeader("tab");
+    await sleep(600);
+    expect((await page.settle()).width).toBe(SIZES.expanded.width);
+
+    await page.dblclickHeader("strip");
+    await waitFor("the compact island", async () => (await page.settle()).width === SIZES.compact.width, 3_000);
+    await page.screenshot("04b-folded-by-double-click");
   });
 
   it("PermissionRequest → Deny prints the documented deny JSON", async () => {
@@ -1278,6 +1313,72 @@ describe(`side instance "${INSTANCE}"`, () => {
     // The island drops its card on its own clock (110 s from when it showed it).
     await page.waitForView("the card to drop", (v) => v.code === null, 10_000);
   }, 150_000);
+
+  it("the island threw no uncaught exception", () => {
+    expect(page.exceptions).toEqual([]);
+  });
+});
+
+// A second launch: the island the user left against the right edge comes back
+// there. The drag itself needs the real mouse (tests/input); this is what it
+// leaves behind — `islandX` in settings.json — and how the app places it.
+describe("an island left against the right edge", () => {
+  let app: RunningApp;
+  let cdp: Cdp;
+  let page: IslandPage;
+
+  beforeAll(async () => {
+    app = await launchApp(sid, { islandX: 1 });
+    ({ cdp } = await Cdp.connect(app.port, (t) => t.title === "Coucou" && !t.url.includes("settings")));
+    page = new IslandPage(cdp);
+    await page.watch();
+    await waitFor("the launch greeting to finish", async () => !(await page.greetingVisible()), 20_000, 200);
+    await page.settle();
+  }, 120_000);
+
+  afterAll(async () => {
+    try {
+      if (app) await stopApp(app, () => page?.quit() ?? Promise.resolve());
+    } finally {
+      cdp?.close();
+      fs.writeFileSync(path.join(RESULTS_DIR, "side-instance-right-edge.log"), readSideLog());
+      removeSideDirs();
+    }
+  }, 60_000);
+
+  /** The window ends on the display's right edge, and the island on the window's. */
+  const expectFlushRight = async () => {
+    const p = await page.placement();
+    const seen = JSON.stringify(p);
+    expect(Math.abs(p.window.x + p.window.width - (p.monitor.x + p.monitor.width)), seen).toBeLessThanOrEqual(1);
+    expect(Math.abs(p.island.right - p.viewport), seen).toBeLessThanOrEqual(0.5);
+    return p;
+  };
+
+  it("comes back flush with the right edge of its display, compact and open", async () => {
+    await waitFor("the compact island", async () => (await page.settle()).width === SIZES.compact.width);
+    await expectFlushRight();
+    await page.screenshot("r1-right-edge-compact");
+
+    // Open, it grows towards the middle of the screen instead of off it.
+    await page.emit("tray", "open");
+    await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
+    const open = await expectFlushRight();
+    expect(open.island.left).toBeCloseTo(open.viewport - SIZES.expanded.width, 0);
+    await page.screenshot("r2-right-edge-open");
+  });
+
+  it("a page saving its settings cannot move it: only a drag writes islandX", async () => {
+    const boot = await page.invoke<{ settings: Record<string, unknown> }>("boot");
+    expect(boot.settings.islandX).toBe(1);
+    await page.invoke("save_settings", { settings: { ...boot.settings, islandX: null, soundVolume: 0.2 } });
+    const saved = readSideSettings();
+    expect(saved.soundVolume).toBe(0.2);
+    expect(saved.islandX).toBe(1);
+    await page.invoke("reposition");
+    await sleep(300);
+    await expectFlushRight();
+  });
 
   it("the island threw no uncaught exception", () => {
     expect(page.exceptions).toEqual([]);

@@ -278,7 +278,8 @@ export function sideDirsLeft(): string[] {
 }
 
 /** Settings for the side instance: muted, so a test run never plays sounds at the user. */
-function writeSideSettings() {
+/** `extra` goes over the defaults, e.g. `{ islandX: 1 }` for an island left at the right edge. */
+function writeSideSettings(extra: Record<string, unknown> = {}) {
   fs.mkdirSync(side.configDir, { recursive: true });
   const settings = {
     soundEnabled: false,
@@ -291,6 +292,7 @@ function writeSideSettings() {
     autostart: false,
     hooksInstalled: false,
     model: "claude-opus-5",
+    ...extra,
   };
   fs.writeFileSync(path.join(side.configDir, "settings.json"), JSON.stringify(settings, null, 2));
 }
@@ -373,7 +375,13 @@ function killTree(pid: number) {
   spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
 }
 
-export async function launchApp(sid: string): Promise<RunningApp> {
+/** Reads the side instance's settings.json back. */
+export function readSideSettings(): Record<string, unknown> {
+  return JSON.parse(fs.readFileSync(path.join(side.configDir, "settings.json"), "utf8"));
+}
+
+/** `settings` goes over the suite's side settings (writeSideSettings). */
+export async function launchApp(sid: string, settings: Record<string, unknown> = {}): Promise<RunningApp> {
   assertKnowsInstances(APP_EXE);
   stopLeftoverFromPidFile();
   if (pipeNames().includes(sidePipeName(sid))) {
@@ -384,7 +392,7 @@ export async function launchApp(sid: string): Promise<RunningApp> {
   }
 
   if (!removeSideDirs()) throw new Error(`a "${INSTANCE}" instance appeared while launching; not starting another`);
-  writeSideSettings();
+  writeSideSettings(settings);
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
   fs.rmSync(SANDBOX_HOME, { recursive: true, force: true });
   fs.mkdirSync(SANDBOX_HOME, { recursive: true });

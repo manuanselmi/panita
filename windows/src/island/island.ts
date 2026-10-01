@@ -6,7 +6,7 @@ import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
-  islandSize,
+  islandLeft, islandSize,
   type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
@@ -26,6 +26,8 @@ import { openPrimary, openSubject } from "./open";
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
 const HIT_MARGIN = 14;
+/** Same as DRAG_THRESHOLD in src-tauri/src/island.rs: past it, a press is a drag. */
+const DRAG_THRESHOLD = 4;
 
 /** The three views the drop sequence owns; leaving them stops the engine. */
 const UPLOAD_VIEWS: ReadonlySet<IslandViewName> = new Set(["upload", "uploading", "choose"]);
@@ -75,6 +77,15 @@ export class Island {
   private wasInIsland = false;
   /** Last shape handed to Rust for the click-through test. */
   private pushedRect = { x: -1, y: -1, w: -1, h: -1 };
+  /**
+   * The island's centre in the window. The middle of the panel unless the
+   * island was dragged against a display edge: Rust owns it (`island-anchor`).
+   */
+  private cx = PANEL_W / 2;
+  /** The press in progress turned into a drag (Rust's `island-drag` "start"). */
+  private dragStarted = false;
+  /** Pointer x on screen at the last mousedown, to tell a click from a drag. */
+  private pressScreenX = 0;
   private homeCollapseAt: number | null = null;
 
   // Bot hover → love (IslandWindowController.botHoverIn)
@@ -468,7 +479,7 @@ export class Island {
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
     this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
-    this.islandEl.style.transform = `translateX(-50%)`;
+    this.islandEl.style.left = `${islandLeft(this.cx, w)}px`;
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
     this.miniGrid.style.left = `${w - 40 - 14.5}px`;
@@ -476,7 +487,7 @@ export class Island {
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
     this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
 
-    const rect = { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
+    const rect = { x: islandLeft(this.cx, w), y: 0, w, h: hh };
     const p = this.pushedRect;
     if (Math.abs(p.x - rect.x) > 0.5 || Math.abs(p.w - rect.w) > 0.5 || Math.abs(p.h - rect.h) > 0.5) {
       this.pushedRect = rect;
@@ -488,7 +499,33 @@ export class Island {
   private islandRect(): { x: number; y: number; w: number; h: number } {
     const w = this.width.value;
     const hh = this.height.value;
-    return { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
+    return { x: islandLeft(this.cx, w), y: 0, w, h: hh };
+  }
+
+  // ── Moving it along the top edge ────────────────────────────────────────────
+  //
+  // Rust places the window and drives the drag (src-tauri/src/island.rs); the
+  // page only says where a press landed and draws the island where Rust says.
+
+  /** Rust moved the island's centre inside the window (`island-anchor`). */
+  setAnchor(cx: number) {
+    if (!Number.isFinite(cx) || Math.abs(cx - this.cx) < 0.01) return;
+    this.cx = cx;
+    this.ensureRunning();
+  }
+
+  /** Rust's `island-drag`: "start" once a press has become a drag, "end" on release. */
+  onDrag(phase: string) {
+    if (phase === "start") this.dragStarted = true;
+    State.lastActivity = performance.now();
+  }
+
+  /**
+   * The open island's empty header strip — between the tabs and the gear,
+   * outside every button: what can be grabbed, and double-clicked to fold.
+   */
+  private isHeaderStrip(target: EventTarget | null): boolean {
+    return target instanceof Element && this.header.el.contains(target) && target.closest("button") == null;
   }
 
   // ── Window collapse (hidden → tiny wake strip, zero polling) ────────────────
@@ -526,14 +563,40 @@ export class Island {
     this.islandEl.addEventListener("mousedown", (e) => {
       Sound.resume();
       State.lastActivity = performance.now();
+      this.dragStarted = false;
+      this.pressScreenX = e.screenX;
       if (State.mode !== "expanded") {
-        this.fsm.click();
+        // The whole compact island is a handle, so it opens on release (below),
+        // not here: a press that moves is a drag instead.
+        if (e.button === 0) void Bridge.islandPress();
+        return;
+      }
+      if (e.button === 0 && this.isHeaderStrip(e.target)) {
+        void Bridge.islandPress();
         return;
       }
       if (this.isBotHit(e.clientX, e.clientY)) {
         this.cancelBotHover();
         this.engine.slap();
       }
+    });
+
+    this.islandEl.addEventListener("mouseup", (e) => {
+      if (State.mode === "expanded") return;
+      // Either signal is enough: Rust's "start" can arrive after a quick flick's
+      // mouseup, and the page's own distance misses a drag that came back.
+      const moved = Math.abs(e.screenX - this.pressScreenX) >= DRAG_THRESHOLD;
+      if (this.dragStarted || moved) return;
+      this.fsm.click();
+    });
+
+    // A double click on the header strip folds the open island down to the
+    // compact one. Not while an approval waits for its answer — the same rule
+    // as Escape: folded, the card could not be answered until the relay gave up.
+    this.header.el.addEventListener("dblclick", (e) => {
+      if (State.mode !== "expanded" || State.isPinned || !this.isHeaderStrip(e.target)) return;
+      Sound.play("blip");
+      this.collapse();
     });
 
     window.addEventListener("keydown", (e) => {

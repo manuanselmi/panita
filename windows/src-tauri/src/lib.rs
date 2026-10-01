@@ -56,6 +56,8 @@ pub struct BootInfo {
     screen: ScreenInfo,
     version: String,
     hook_path: String,
+    /// The island's centre inside the panel window (island.rs, `island-anchor`).
+    island_cx: f64,
 }
 
 #[tauri::command]
@@ -69,13 +71,17 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
         screen,
         version: env!("CARGO_PKG_VERSION").to_string(),
         hook_path: settings::hook_exe_path().to_string_lossy().to_string(),
+        island_cx: shared.gate.island_cx(),
     }
 }
 
 #[tauri::command]
-fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
+fn save_settings(app: AppHandle, shared: State<Shared>, mut settings: Settings) {
     let (screen_changed, autostart_changed) = {
         let mut current = shared.settings.lock().unwrap();
+        // Only a drag moves the island (island.rs). The pages hold copies of the
+        // settings from before it, and saving one must not put the island back.
+        settings.island_x = current.island_x;
         let screen_changed = current.screen != settings.screen;
         let autostart_changed = current.autostart != settings.autostart;
         *current = settings.clone();
@@ -93,7 +99,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
     }
     if screen_changed {
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-        island::apply_geometry(&app, &settings.screen, collapsed);
+        island::apply_geometry(&app, collapsed);
     }
     // Keep the other window in step (island ⇄ settings window).
     let _ = app.emit("settings-changed", settings);
@@ -103,9 +109,11 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
 /// cursor poll; anything else → full panel and 60 Hz polling.
 #[tauri::command]
 fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
-    let pref = shared.settings.lock().unwrap().screen.clone();
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
-    island::apply_geometry(&app, &pref, collapsed);
+    if collapsed {
+        shared.gate.cancel_press();
+    }
+    island::apply_geometry(&app, collapsed);
     // The wake strip must always take the mouse, and a resize invalidates the flag.
     island::set_ignore_cursor(&app, false);
     shared.gate.forget_ignore_state();
@@ -116,6 +124,13 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
 #[tauri::command]
 fn set_island_rect(shared: State<Shared>, x: f64, y: f64, width: f64, height: f64) {
     shared.gate.set_rect(island::IslandRect { x, y, w: width, h: height });
+}
+
+/// mousedown on the compact island or on the open island's header strip: the
+/// cursor poll takes it from here, and it becomes a drag if the pointer moves.
+#[tauri::command]
+fn island_press(app: AppHandle, shared: State<Shared>) {
+    island::press(&app, &shared.gate);
 }
 
 #[tauri::command]
@@ -129,9 +144,8 @@ fn focus_window(app: AppHandle, focused: bool) {
 
 #[tauri::command]
 fn reposition(app: AppHandle, shared: State<Shared>) {
-    let pref = shared.settings.lock().unwrap().screen.clone();
     let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-    island::apply_geometry(&app, &pref, collapsed);
+    island::apply_geometry(&app, collapsed);
 }
 
 #[tauri::command]
@@ -504,7 +518,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .manage(Shared {
-            settings: Mutex::new(loaded.clone()),
+            settings: Mutex::new(loaded),
             gate: gate.clone(),
         })
         .manage(Pending::default())
@@ -515,6 +529,7 @@ pub fn run() {
             save_settings,
             set_collapsed,
             set_island_rect,
+            island_press,
             focus_window,
             reposition,
             open_url,
@@ -551,7 +566,7 @@ pub fn run() {
 
             if let Some(win) = island::window(&handle) {
                 island::make_non_activating(&win);
-                island::apply_geometry(&handle, &loaded.screen, false);
+                island::apply_geometry(&handle, false);
                 let _ = win.show();
             }
             gate.collapsed.store(false, Ordering::Relaxed);

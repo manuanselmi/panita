@@ -62,6 +62,17 @@ export const EXPANDED_W = 640;
 export const ROUNDED_CORNER = 14; // hidden / compact
 export const EXPANDED_CORNER = 22;
 
+/**
+ * Left edge, in window px, of an island `w` wide centred on `cx`, kept inside
+ * the 720 px panel. Centred (cx 360) it is plain `(PANEL_W - w) / 2`. With the
+ * island dragged against a display edge, Rust stops the window at the edge and
+ * moves cx instead (src-tauri/src/island.rs): the island then stays flush with
+ * that edge however wide it grows, and opens towards the middle of the screen.
+ */
+export function islandLeft(cx: number, w: number): number {
+  return Math.min(Math.max(cx - w / 2, 0), Math.max(0, PANEL_W - w));
+}
+
 /** Invisible hover strip that wakes the island when hidden. */
 export const WAKE_STRIP_W = 240;
 export const WAKE_STRIP_H = 6;

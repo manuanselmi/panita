@@ -39,8 +39,10 @@ installs for the current user only — no admin prompt.
 
 | What you do | What happens |
 |---|---|
-| Move the mouse to the very top-centre of the screen | Mochi peeks out |
+| Move the mouse to the very top of the screen, where the island lives (top-centre until you move it) | Mochi peeks out |
 | Click the small island | It opens |
+| Drag the small island — or the open island by the empty strip of its header — sideways | It slides along the top edge and stays where you leave it, across restarts. Against an edge, it opens towards the middle; dragged back near the middle, it snaps to the centre |
+| Double-click the empty strip of the open island's header | It folds back to the small island (not while a permission request waits for its answer) |
 | Click Mochi | It gets annoyed. Three times in a row and it goes dizzy |
 | Rest the pointer on Mochi for two seconds | Hearts |
 | Drag a file onto the island | Mochi turns into a box, swallows it, then offers to answer questions about it |
@@ -225,8 +227,9 @@ problems. It stays on your machine.
 
 ## What's different from the Mac version
 
-- No notch, so the island lives at the top centre of the screen and retracts into
-  the top edge instead of hiding in a notch.
+- No notch, so the island lives at the top of the screen — centred until you
+  drag it along the top edge — and retracts into the edge instead of hiding in
+  a notch.
 - Permission approval works from **any** terminal; the Mac build only listens to
   VS Code sessions.
 - Jumping to a session's terminal goes through VS Code only (its window, and

@@ -26,6 +26,8 @@ export interface BootInfo {
   screen: { x: number; y: number; width: number; height: number; scale: number };
   version: string;
   hookPath: string;
+  /** The island's centre inside the window, px (see `island-anchor`). */
+  islandCx: number;
 }
 
 export const Bridge = {
@@ -42,6 +44,13 @@ export const Bridge = {
    */
   setIslandRect: (x: number, y: number, width: number, height: number) =>
     call<void>("set_island_rect", { x, y, width, height }),
+
+  /**
+   * mousedown on the compact island or on the open island's header strip.
+   * Rust's cursor poll takes it from there: past a few px of travel it drags
+   * the island along the top edge, emitting `island-drag` and `island-anchor`.
+   */
+  islandPress: () => call<void>("island_press"),
 
   /** Give the window keyboard focus (chat field) and take it away again. */
   focusWindow: (focused: boolean) => call<void>("focus_window", { focused }),

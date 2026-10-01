@@ -108,6 +108,18 @@ export interface Box {
   height: number;
 }
 
+/** Where the island window and the island in it are, as Tauri and the DOM see them. */
+export interface Placement {
+  /** The island window, physical px. */
+  window: { x: number; width: number };
+  /** The display it is on, physical px. */
+  monitor: { x: number; width: number };
+  scale: number;
+  /** The island inside the window, CSS px, and the window's own width. */
+  island: { left: number; right: number };
+  viewport: number;
+}
+
 /** The island's three sizes (src/core/layout.ts): hidden, compact, expanded. */
 export const SIZES = {
   hidden: { width: 184, height: 0 },
@@ -459,6 +471,41 @@ export class IslandPage {
       const r = document.getElementById("island").getBoundingClientRect();
       return { width: Math.round(r.width), height: Math.round(r.height) };
     })()`);
+  }
+
+  /** Window, display and island positions (Tauri's window getters + the DOM). */
+  placement(): Promise<Placement> {
+    return this.cdp.evaluate<Placement>(`(async () => {
+      const T = window.__TAURI_INTERNALS__;
+      const label = "island";
+      const pos = await T.invoke("plugin:window|outer_position", { label });
+      const size = await T.invoke("plugin:window|outer_size", { label });
+      const mon = await T.invoke("plugin:window|current_monitor", { label });
+      const r = document.getElementById("island").getBoundingClientRect();
+      return {
+        window: { x: pos.x, width: size.width },
+        monitor: { x: mon.position.x, width: mon.size.width },
+        scale: mon.scaleFactor,
+        island: { left: r.left, right: r.right },
+        viewport: window.innerWidth,
+      };
+    })()`);
+  }
+
+  /**
+   * A `dblclick` on the open island's header: on the empty strip, or on the
+   * Home tab. Only the dblclick event itself — no mousedown, which would arm
+   * Rust's drag against the real mouse button.
+   */
+  async dblclickHeader(where: "strip" | "tab") {
+    const ok = await this.cdp.evaluate<boolean>(`(() => {
+      const header = document.getElementById("header");
+      const target = ${JSON.stringify(where)} === "tab" ? header.querySelector(".tab") : header;
+      if (!target) return false;
+      target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 }));
+      return true;
+    })()`);
+    if (!ok) throw new Error(`no header ${where} to double-click`);
   }
 
   greetingVisible(): Promise<boolean> {

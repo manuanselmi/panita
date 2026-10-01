@@ -22,6 +22,12 @@ pub struct Settings {
     /// Defaulted explicitly so a settings.json written by an older build still loads.
     #[serde(default = "default_model")]
     pub model: String,
+    /// Where the island sits along the top edge: its centre as a fraction of the
+    /// display's width (0.5 = centred). None until the island is first dragged.
+    /// Only the drag writes it — `save_settings` keeps whatever is stored, so a
+    /// window holding an older copy of the settings can never move the island.
+    #[serde(default)]
+    pub island_x: Option<f64>,
 }
 
 fn default_model() -> String {
@@ -43,6 +49,7 @@ impl Default for Settings {
             autostart: false,
             hooks_installed: false,
             model: default_model(),
+            island_x: None,
         }
     }
 }
