@@ -19,6 +19,15 @@ mano, cherry-pick solo de arreglos del relay y del hook, o dejar de seguir upstr
 con qué frecuencia y cómo actualizar. Hacer un `git fetch upstream` y medir cuánto conflictúa
 antes de decidir.
 
+**Medición del 2026-10-01** (`git fetch upstream`, merge de prueba con `git merge-tree`, sin
+escribir nada): `upstream/main` está 25 commits adelante de la base común `835421c`. Solo 5
+tocan `windows/` y son una sola feature: el campo `coucou_agent` para enrutar agentes de
+terceros (Gemini CLI, Antigravity) a su propia píldora. Ninguno es un arreglo. El merge
+conflictúa en 3 archivos: `windows/hook/src/main.rs` (parseo de argv: upstream agregó
+`--agent`, nosotros `--wsl-ppid`), `windows/src/core/state.ts` y `windows/src/island/hooks.ts`.
+El commit "Harden the hook socket and local logs" (`1f6e0d0`) es solo de macOS. Para el uso de
+Manuel (solo Claude Code), esta tanda no aporta nada.
+
 ### I2. ¿Un segundo pedido de permiso debería esperar en cola en vez de volver a la terminal?
 Hoy, si llega un pedido mientras otro está en pantalla, el segundo se rechaza en la isla (la
 terminal pregunta como siempre) y su panita queda con un badge ámbar. Con varias sesiones
@@ -40,16 +49,6 @@ Desbloquea: posible ajuste a D-004.
 La extensión se instaló por CLI (`code --install-extension … --force`); el botón solo está
 probado en e2e contra un `code` falso. `[A VERIFICAR]` en la próxima actualización de la
 extensión.
-
-### O2. Limpieza pendiente del disco y de ramas
-- Worktrees de subagentes en `panita/.claude/worktrees/` (`sessions`, `wsl-and-focus`,
-  `terminal-focus`, `island-ui`; uno figura `locked`): varios GB cada uno, casi todo `target/`
-  de Rust. Ya están mergeados en `main`.
-- Ramas locales ya mergeadas: `integration`, `integration2`, `ticker-fix`, `test-harness`,
-  `sessions`, `wsl-and-focus`, `terminal-focus`, `island-ui`, `worktree-agent-*`.
-- La carpeta vieja `C:\Users\manua\Documents\GitHub\coucou` (clon original, 1,8 GB de builds;
-  nada sin subir): se borra con VS Code cerrado.
-Esperando el OK de Manuel para borrar.
 
 ### O3. `npm run test:input` nunca se corrió
 Mueve el mouse de verdad (hover en el borde, que un click no robe el foco). Correrlo con el
@@ -74,4 +73,14 @@ instalador para que Defender no lo marque. Mientras sea privado, no aplica.
 
 ## Resueltas
 
-_(vacío)_
+### O2. Limpieza pendiente del disco y de ramas — resuelta 2026-10-01
+Pendiente original: los worktrees de subagentes en `panita/.claude/worktrees/` (`sessions`,
+`wsl-and-focus`, `terminal-focus`, `island-ui`, uno `locked`), las ramas locales ya mergeadas
+y la carpeta vieja `C:\Users\manua\Documents\GitHub\coucou`.
+
+Qué se hizo, con el OK de Manuel: antes de borrar se verificó que los cuatro worktrees no
+tuvieran cambios ni stashes y que todas las ramas fueran ancestro de `main`. Lo único ignorado
+eran builds (`target/`, `node_modules/`, `src-tauri/gen/`) y capturas de e2e, que se regeneran.
+El lock de `island-ui` era viejo: lo había puesto el subagente con PID 23928, que ya no existía.
+Se hicieron `git worktree unlock` y `git worktree remove` de los cuatro, y `git branch -d`
+(no fuerza) de las 12 ramas mergeadas. Queda solo `main`. La carpeta `coucou` ya no existía.
