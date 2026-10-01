@@ -1,0 +1,77 @@
+# Preguntas abiertas
+
+> Todo lo que no sabemos y condiciona alguna decisión.
+> **Protocolo:** cuando una pregunta se responde, la respuesta se lleva a donde corresponda
+> (`windows/*.md`, `decisiones.md`) y la pregunta se mueve a "Resueltas" con fecha. No se borra.
+
+---
+
+## 🔴 Bloqueantes — sin esto no se avanza
+
+_(ninguna)_
+
+## 🟡 Importantes — condicionan el diseño
+
+### I1. ¿Cómo se traen los cambios del autor sin romper lo nuestro?
+`windows/` divergió mucho (sesiones, WSL, extensión, explicaciones) y upstream sigue
+commiteando. Hay que decidir la estrategia: merge periódico de `upstream/main` resolviendo a
+mano, cherry-pick solo de arreglos del relay y del hook, o dejar de seguir upstream. Desbloquea:
+con qué frecuencia y cómo actualizar. Hacer un `git fetch upstream` y medir cuánto conflictúa
+antes de decidir.
+
+### I2. ¿Un segundo pedido de permiso debería esperar en cola en vez de volver a la terminal?
+Hoy, si llega un pedido mientras otro está en pantalla, el segundo se rechaza en la isla (la
+terminal pregunta como siempre) y su panita queda con un badge ámbar. Con varias sesiones
+trabajando a la vez puede pasar seguido. Una cola respetaría "nunca bloquear" solo si el tiempo
+total sigue acotado por el relay (110 s). Desbloquea: si vale la pena el cambio.
+
+### I3. ¿Se traduce al español el resto de la interfaz?
+Hoy: etiquetas y explicaciones en español; "needs permission", "Deny/Allow", "No other
+sessions", Settings, en inglés (D-012). Desbloquea: consistencia de la UI.
+
+### I4. ¿El click en una panita debería "pegarse" a la izquierda?
+Con el orden por actividad (D-004) la sesión clickeada se va cuando otra hace algo después de
+2 s. Si en el uso real molesta, la alternativa es fijarla hasta otro click o hasta que pida algo.
+Desbloquea: posible ajuste a D-004.
+
+## 🟢 Operativas — para el día a día
+
+### O1. ¿Anda el botón Install/Update de la extensión en Settings con un click real?
+La extensión se instaló por CLI (`code --install-extension … --force`); el botón solo está
+probado en e2e contra un `code` falso. `[A VERIFICAR]` en la próxima actualización de la
+extensión.
+
+### O2. Limpieza pendiente del disco y de ramas
+- Worktrees de subagentes en `panita/.claude/worktrees/` (`sessions`, `wsl-and-focus`,
+  `terminal-focus`, `island-ui`; uno figura `locked`): varios GB cada uno, casi todo `target/`
+  de Rust. Ya están mergeados en `main`.
+- Ramas locales ya mergeadas: `integration`, `integration2`, `ticker-fix`, `test-harness`,
+  `sessions`, `wsl-and-focus`, `terminal-focus`, `island-ui`, `worktree-agent-*`.
+- La carpeta vieja `C:\Users\manua\Documents\GitHub\coucou` (clon original, 1,8 GB de builds;
+  nada sin subir): se borra con VS Code cerrado.
+Esperando el OK de Manuel para borrar.
+
+### O3. `npm run test:input` nunca se corrió
+Mueve el mouse de verdad (hover en el borde, que un click no robe el foco). Correrlo con el
+escritorio libre.
+
+### O4. ¿Qué pasa con sesiones fuera de terminales de VS Code?
+No se probaron: Windows Terminal, el panel de la extensión oficial de Claude Code en VS Code,
+ventanas Remote-SSH o contenedores (la companion no contesta en esos remotos). Hoy caen en el
+comportamiento de D-009.
+
+### O5. ¿Cuándo cae la activación en "parpadeo" en vez de traer la ventana?
+Siempre se vio `set directly`. La cadena de respaldo (`AttachThreadInput` → `FlashWindowEx`)
+existe pero nunca se observó en uso real.
+
+## 🔵 Del producto
+
+### N1. ¿Se publica algún día?
+Si sí, hace falta nombre, personaje, ícono y sonidos propios (`LICENSE-ASSETS.md`), y firmar el
+instalador para que Defender no lo marque. Mientras sea privado, no aplica.
+
+---
+
+## Resueltas
+
+_(vacío)_
