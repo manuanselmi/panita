@@ -5,6 +5,11 @@
 //! be created by *any* account that gets there first. Two defences, both cheap:
 //! the pipe name carries our SID, and once connected we check the server process
 //! really belongs to us before sending anything.
+//!
+//! Shared verbatim with coucou.exe (the app pulls this file in with `#[path]`):
+//! it names the relay pipe from the same SID, and checks the VS Code
+//! extension's pipes (`coucou-vscode-*`, see the app's terminal.rs) the same way
+//! before asking them anything.
 
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, LocalFree, HLOCAL};

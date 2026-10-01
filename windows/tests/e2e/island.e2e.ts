@@ -10,9 +10,15 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Cdp } from "./cdp";
 import {
+  EXTENSION_ID,
+  EXTENSION_MANIFEST,
+  FAKE_CODE,
   INSTANCE,
   RESULTS_DIR,
   SANDBOX_HOME,
+  fakeCodeCalls,
+  runHookInWslHolding,
+  wslHookCommandBeforePpid,
   type HookRun,
   type RealInstall,
   type RunningApp,
@@ -39,6 +45,7 @@ import {
   wslPath,
   wslTarget,
 } from "./harness";
+import { FakeVsCodeWindow, sideExtensionPipes, startSilentWindow } from "./fake-vscode";
 import { IslandPage, SIZES, type Overview } from "./island-page";
 import { SettingsPage } from "./settings-page";
 
@@ -102,6 +109,17 @@ const payloadOf = (s: E2eSession, extra: Record<string, unknown> = {}) => ({
 const askFrom = (s: E2eSession, command: string) =>
   payloadOf(s, { permission_mode: "default", tool_name: "Bash", tool_input: { command, description: "e2e" } });
 
+/**
+ * The terminal-focus sessions. Their folders exist nowhere — every part of the
+ * path is unique to this run — so no VS Code window on the desktop can ever
+ * match them by title.
+ */
+const TAG = Math.random().toString(16).slice(2, 10);
+const T = {
+  win: { id: `e2e-term-win-${TAG}`, name: `termwin${TAG}`, cwd: String.raw`C:\coucou-e2e-${TAG}\termwin${TAG}` },
+  wsl: { id: `e2e-term-wsl-${TAG}`, name: `termwsl${TAG}`, cwd: `/coucou-e2e-${TAG}/termwsl${TAG}` },
+} satisfies Record<string, E2eSession>;
+
 beforeAll(() => {
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
   realBefore = snapshotRealInstall(sid);
@@ -114,6 +132,10 @@ describe(`side instance "${INSTANCE}"`, () => {
   let settings: SettingsPage | undefined;
   /** The side instance's staged relay, as the WSL distro sees it. */
   let relayLinux = "";
+  /** Set once the side instance is shown to use the fake `code` (FAKE_CODE). */
+  let codeIsFake = false;
+  /** The fake VS Code window of the terminal-focus tests, while it serves. */
+  let fakeWindow: FakeVsCodeWindow | null = null;
 
   beforeAll(async () => {
     app = await launchApp(sid);
@@ -132,6 +154,7 @@ describe(`side instance "${INSTANCE}"`, () => {
         await page.screenshot("99-last").catch(() => undefined);
       }
       if (app) await stopApp(app, () => page?.quit() ?? Promise.resolve());
+      await fakeWindow?.close();
     } finally {
       settings?.cdp.close();
       cdp?.close();
@@ -463,8 +486,8 @@ describe(`side instance "${INSTANCE}"`, () => {
       await page.clickOpen("second");
       const opens = (await page.opens()).slice(before);
       expect(opens).toEqual([
-        { cmd: "open_session", args: { cwd: S.hekta.cwd, wslDistro: null } },
-        { cmd: "open_session", args: { cwd: S.sexto.cwd, wslDistro: null } },
+        { cmd: "open_session", args: { cwd: S.hekta.cwd, wslDistro: null, sessionId: S.hekta.id } },
+        { cmd: "open_session", args: { cwd: S.sexto.cwd, wslDistro: null, sessionId: S.sexto.id } },
       ]);
     });
 
@@ -525,7 +548,9 @@ describe(`side instance "${INSTANCE}"`, () => {
 
       const before = (await page.opens()).length;
       await page.click("Open terminal");
-      expect((await page.opens()).slice(before)).toEqual([{ cmd: "open_session", args: { cwd: S.panita.cwd, wslDistro: null } }]);
+      expect((await page.opens()).slice(before)).toEqual([
+        { cmd: "open_session", args: { cwd: S.panita.cwd, wslDistro: null, sessionId: S.panita.id } },
+      ]);
     });
 
     it("the compact island shows the other sessions in their colours", async () => {
@@ -588,6 +613,104 @@ describe(`side instance "${INSTANCE}"`, () => {
     await waitForLog(/open session \(Windows\): refused — the session's folder is not an absolute Windows path/, 5_000, from);
   });
 
+  // ── Terminal focus ──────────────────────────────────────────────────────────
+  // ↗ asks the companion VS Code extension to show the session's own terminal
+  // tab. The extension here is FakeVsCodeWindow — the extension's real server
+  // code, serving the side instance's pipe name, with made-up terminals — and
+  // the island's ↗ is clicked with nothing intercepted. That is safe because
+  // the sessions live in folders that exist nowhere (no window on the desktop
+  // can match them, so nothing is activated) and the side instance's `code` is
+  // the fake, which the first test proves before any click.
+
+  it("the side instance's `code` is the suite's fake", async () => {
+    const status = await page.invoke<{ codePath: string | null; vsixPath: string | null }>("vscode_extension_status");
+    expect(status.codePath?.toLowerCase()).toBe(FAKE_CODE.toLowerCase());
+    expect(status.vsixPath).toMatch(/coucou-terminal-focus\.vsix$/);
+    codeIsFake = true;
+  });
+
+  it("↗ has the extension show the Windows session's own terminal, found by the relay's ancestry", async (ctx) => {
+    if (!codeIsFake) return ctx.skip("the side instance's `code` is not the fake");
+    expect(sideExtensionPipes(), "another fake window is serving").toEqual([]);
+    const windowName = `coucou-e2e-window-${TAG}`;
+    fakeWindow = await FakeVsCodeWindow.start({ kind: "local" }, windowName);
+    fakeWindow.addTerminal("another tab", 4);
+    // This process spawns the relay, so it is the relay's nearest ancestor: a
+    // terminal whose shell has this PID stands for the tab the session runs in.
+    const tab = fakeWindow.addTerminal("e2e-terminal", process.pid);
+    expect(sideExtensionPipes()).toEqual([fakeWindow.listedName]);
+
+    for (const [event, extra] of [
+      ["UserPromptSubmit", { prompt: "terminal focus" }],
+      ["PreToolUse", { tool_name: "Bash", tool_input: { command: "echo terminal-focus" } }],
+    ] as const) {
+      expect(await runHook(event, payloadOf(T.win, extra))).toMatchObject({ code: 0, stdout: "", stderr: "" });
+    }
+    await page.emit("tray", "open");
+    await page.waitForOverview("the terminal session on the left", (o) => o.primary?.name === T.win.name);
+
+    const from = readSideLog().length;
+    const codeCalls = fakeCodeCalls().length;
+    await page.clickOpenUnintercepted("primary");
+    await waitFor("the extension to be asked", () => fakeWindow!.requests.length >= 1);
+    const [request] = fakeWindow.requests;
+    // The relay's Windows ancestry, nearest first: this process, then its parent.
+    expect(request.pids[0]).toBe(process.pid);
+    expect(request.pids[1]).toBe(process.ppid);
+    expect(request.wsl).toBeNull();
+    expect(fakeWindow.replies).toEqual([{ matched: true, terminal: "e2e-terminal", window: windowName }]);
+    expect(tab.shows).toEqual([false]);
+    await waitForLog(new RegExp(`open session \\(Windows\\): terminal "e2e-terminal" focused in "${windowName}" \\(\\d+ ms\\)`), 5_000, from);
+    // No window on the desktop has that name or that folder: none is raised,
+    // and since the session is known to be in a VS Code window, none is opened.
+    await waitForLog(/open session \(Windows\): terminal shown, window not raised/, 5_000, from);
+    expect(fakeCodeCalls().length).toBe(codeCalls);
+    await page.screenshot("18-terminal-focus");
+  });
+
+  it("no matching terminal, no extension, or no record: ↗ is the window step alone, as before", async (ctx) => {
+    if (!codeIsFake || !fakeWindow) return ctx.skip("the previous test did not run");
+    // A window whose terminals are all someone else's.
+    fakeWindow.terminals.length = 0;
+    fakeWindow.addTerminal("someone else", 4);
+    let from = readSideLog().length;
+    await page.clickOpenUnintercepted("primary");
+    await waitForLog(/open session \(Windows\): 1 of 1 VS Code window\(s\) answered; none has its terminal/, 5_000, from);
+    // What ↗ did before the extension existed: no window has the folder, so
+    // `code <cwd>` — here, the fake.
+    await waitForLog(/open session \(Windows\): no VS Code window for it — asked `code` to open it/, 5_000, from);
+    expect(fakeCodeCalls().at(-1)).toBe(T.win.cwd);
+
+    // A wedged extension: it takes the connection and never answers. The app
+    // gives up on its own deadline (1.5 s) and goes on.
+    await fakeWindow.close();
+    fakeWindow = null;
+    const silent = await startSilentWindow();
+    try {
+      from = readSideLog().length;
+      const clicked = Date.now();
+      await page.clickOpenUnintercepted("primary");
+      await waitForLog(/open session \(Windows\): no extension answered \(1 asked: timed out; \d+ ms\)/, 5_000, from);
+      await waitForLog(/open session \(Windows\): no VS Code window for it — asked `code` to open it/, 5_000, from);
+      expect(Date.now() - clicked).toBeLessThan(4_000);
+    } finally {
+      await silent.close();
+    }
+
+    // No extension at all.
+    expect(sideExtensionPipes()).toEqual([]);
+    from = readSideLog().length;
+    await page.clickOpenUnintercepted("primary");
+    await waitForLog(/open session \(Windows\): no extension answered — no VS Code window serves one/, 5_000, from);
+    await waitForLog(/open session \(Windows\): no VS Code window for it — asked `code` to open it/, 5_000, from);
+
+    // SessionEnd forgets the session's terminal.
+    expect(await runHook("SessionEnd", payloadOf(T.win, { reason: "exit" }))).toMatchObject({ code: 0, stdout: "" });
+    from = readSideLog().length;
+    expect(await page.invoke("open_session", { cwd: T.win.cwd, wslDistro: null, sessionId: T.win.id })).toBe("opened");
+    await waitForLog(/open session \(Windows\): no terminal recorded for it/, 5_000, from);
+  });
+
   // ── Hook targets, in the sandbox home ───────────────────────────────────────
   // The side instance runs with COUCOU_TEST_HOME, so every target's
   // settings.json is a file under test-results/e2e/sandbox-home. Each test
@@ -621,6 +744,33 @@ describe(`side instance "${INSTANCE}"`, () => {
     await settings.waitForRow("windows", (r) => r.state === "Not installed");
   });
 
+  it("Settings: the VS Code terminal focus row installs the bundled extension — through the fake `code`", async (ctx) => {
+    if (!codeIsFake) return ctx.skip("the side instance's `code` is not the fake");
+    settings ??= new SettingsPage((await Cdp.connect(app.port, (t) => t.url.includes("settings.html"))).cdp);
+    await settings.shown();
+    const row = await settings.waitForExtensionRow((r) => r.state === "Not installed");
+    expect(row.label).toBe("VS Code terminal focus");
+    // The stand-in, never the user's VS Code — checked before the click.
+    expect(row.path?.toLowerCase()).toBe(FAKE_CODE.toLowerCase());
+    expect(fakeCodeCalls()).toContain("--list-extensions --show-versions");
+
+    const before = fakeCodeCalls().length;
+    await settings.clickInExtensionRow("Install");
+    const done = await settings.waitForExtensionRow((r) => r.state === `Installed ${EXTENSION_MANIFEST.version}`);
+    expect(done.notice).toMatch(/^Installed\./);
+    expect(done.buttons).toEqual([]); // up to date: nothing to click
+    const install = fakeCodeCalls().slice(before).find((c) => c.startsWith("--install-extension "));
+    expect(install).toMatch(/ --force$/);
+    // The package the app shipped: the real .vsix this build made (a zip).
+    const vsix = install!.replace(/^--install-extension /, "").replace(/ --force$/, "").replace(/^"|"$/g, "");
+    expect(path.basename(vsix)).toBe("coucou-terminal-focus.vsix");
+    expect(vsix, "a plain path, not Tauri's verbatim \\\\?\\ form").toMatch(/^[A-Za-z]:\\/);
+    expect(fs.readFileSync(vsix).subarray(0, 2).toString("latin1")).toBe("PK");
+    expect(readSideLog()).toContain(`installing the VS Code extension ${EXTENSION_MANIFEST.version}`);
+    expect(EXTENSION_ID).toBe("coucou.terminal-focus");
+    await settings.screenshot("11-settings-extension");
+  });
+
   // ── WSL ─────────────────────────────────────────────────────────────────────
   // The relay run from inside the user's (already running) distro through WSL
   // interop, as a Claude Code session there runs it. Skipped without WSL.
@@ -632,6 +782,9 @@ describe(`side instance "${INSTANCE}"`, () => {
     const seen = await waitFor("the Windows payload in the island", async () =>
       (await page.hooksSeen()).find((p) => p.cwd === "C:\\e2e\\windows-side"));
     expect(seen).not.toHaveProperty("wsl_distro");
+    // The relay's terminal hints stay in the app (terminal.rs).
+    expect(seen).not.toHaveProperty("ancestor_pids");
+    expect(seen).not.toHaveProperty("wsl_ppid");
   });
 
   it("a WSL session's events reach the island with wsl_distro", async (ctx) => {
@@ -656,7 +809,57 @@ describe(`side instance "${INSTANCE}"`, () => {
       (await page.hooksSeen()).find((p) => p.cwd === WSL_CWD));
     expect(seen.wsl_distro).toBe(distro);
     expect(seen.hook_event_name).toBe("PreToolUse");
+    expect(seen).not.toHaveProperty("wsl_ppid");
   });
+
+  it("↗ on a WSL session: the app walks /proc in the distro, and the WSL window shows the terminal", async (ctx) => {
+    if (!wsl.distro || !wslRoutingProven) return ctx.skip(wsl.skip ?? "WSL routing not proven");
+    if (!codeIsFake) return ctx.skip("the side instance's `code` is not the fake");
+    const distro = wsl.distro;
+    expect(sideExtensionPipes(), "another fake window is serving").toEqual([]);
+    const windowName = `${T.wsl.name} [WSL: ${distro}]`;
+    const vsWindow = await FakeVsCodeWindow.start({ kind: "wsl", distro }, windowName);
+    fakeWindow = vsWindow;
+    // The hook command exactly as installed, run by a shell that stays alive:
+    // its `$PPID` is that shell, which stands for Claude Code.
+    const held = runHookInWslHolding(distro, wslHookCommand(relayLinux, "PreToolUse"), {
+      hook_event_name: "PreToolUse",
+      session_id: T.wsl.id,
+      cwd: T.wsl.cwd,
+      tool_name: "Bash",
+      tool_input: { command: "echo held-in-wsl" },
+    });
+    try {
+      const parent = await held.parentPid;
+      // In a Remote-WSL window, a terminal's processId is its Linux shell's PID.
+      const tab = vsWindow.addTerminal("e2e-wsl-terminal", parent);
+      expect(await held.hookDone).toBe(0);
+      await page.emit("tray", "open");
+      await page.waitForOverview("the WSL terminal session on the left", (o) => o.primary?.name === T.wsl.name);
+
+      const from = readSideLog().length;
+      await page.clickOpenUnintercepted("primary");
+      await waitFor("the WSL window to be asked", () => vsWindow.requests.length >= 1, 10_000);
+      const [request] = vsWindow.requests;
+      expect(request.wsl?.distro).toBe(distro);
+      // The Linux chain, read from /proc at click time: the shell first, then up.
+      expect(request.wsl?.pids[0]).toBe(parent);
+      expect(request.wsl!.pids.length).toBeGreaterThan(2);
+      // Interop: the relay's Windows ancestry runs through the wsl.exe this
+      // process started — and on to this process.
+      expect(request.pids).toContain(process.pid);
+      expect(vsWindow.replies).toEqual([{ matched: true, terminal: "e2e-wsl-terminal", window: windowName }]);
+      expect(tab.shows).toEqual([false]);
+      await waitForLog(new RegExp(`open session \\(WSL\\): terminal "e2e-wsl-terminal" focused in "${escapeRe(windowName)}" \\(\\d+ ms\\)`), 10_000, from);
+      await waitForLog(/open session \(WSL\): terminal shown, window not raised/, 5_000, from);
+    } finally {
+      held.stop();
+      await held.closed.catch(() => undefined);
+      await vsWindow.close();
+      fakeWindow = null;
+      await runHook("SessionEnd", payloadOf(T.wsl, { reason: "exit" }));
+    }
+  }, 60_000);
 
   it("PermissionRequest from WSL → Allow prints the documented allow JSON inside WSL", async (ctx) => {
     if (!wsl.distro || !wslRoutingProven) return ctx.skip(wsl.skip ?? "WSL routing not proven");
@@ -761,6 +964,46 @@ describe(`side instance "${INSTANCE}"`, () => {
     });
   }, 90_000);
 
+  it("Settings: a WSL install from before --wsl-ppid is outdated, and Update… goes through the diff", async (ctx) => {
+    if (!wsl.distro || !wslRoutingProven) return ctx.skip(wsl.skip ?? "WSL routing not proven");
+    const distro = wsl.distro;
+    const id = `wsl:${distro}`;
+    settings ??= new SettingsPage((await Cdp.connect(app.port, (t) => t.url.includes("settings.html"))).cdp);
+    const file = path.join(SANDBOX_HOME, "wsl", distro, ".claude", "settings.json");
+    // Every event, as the previous version of Coucou wrote it.
+    const events: [string, number][] = [
+      ["SessionStart", 10], ["SessionEnd", 10], ["UserPromptSubmit", 10], ["PreToolUse", 10],
+      ["PostToolUse", 10], ["PostToolUseFailure", 10], ["PermissionRequest", 120], ["Notification", 10],
+      ["Stop", 10], ["StopFailure", 10], ["SubagentStart", 10], ["SubagentStop", 10],
+    ];
+    const entry = (command: string, timeout: number) => [{ hooks: [{ type: "command", command, timeout }] }];
+    const old = { hooks: Object.fromEntries(events.map(([e, t]) => [e, entry(wslHookCommandBeforePpid(relayLinux, e), t)])) };
+    const oldText = JSON.stringify(old, null, 2);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, oldText);
+
+    await settings.shown();
+    const row = await settings.waitForRow(id, (r) => r.state === "Installed — update available");
+    expect(row.path).toBe(file); // the sandbox, never the distro's real home
+    expect(row.buttons).toEqual(["Update…", "Uninstall…"]);
+    await settings.clickInRow(id, "Update…");
+    const pv = await settings.waitForPreview("the update diff", (p) => p.diff !== null);
+    expect(pv.diff).toContain(JSON.stringify(wslHookCommand(relayLinux, "PreToolUse")).slice(1, -1));
+    expect(pv.diff).toContain(JSON.stringify(wslHookCommandBeforePpid(relayLinux, "PreToolUse")).slice(1, -1));
+    await settings.click("Back up and write");
+    await settings.waitForPreview("the done notice", (p) => p.ok?.startsWith("Done.") ?? false);
+
+    const after = JSON.parse(fs.readFileSync(file, "utf8"));
+    for (const [event, timeout] of events) {
+      expect(after.hooks[event]).toEqual(entry(wslHookCommand(relayLinux, event), timeout));
+    }
+    const backups = fs.readdirSync(path.dirname(file)).filter((f) => f.startsWith("settings.json.bak-"));
+    expect(backups.map((b) => fs.readFileSync(path.join(path.dirname(file), b), "utf8"))).toContain(oldText);
+    await settings.waitForRow(id, (r) => r.state === "Installed");
+    // Only the sandbox's copy of the distro's home.
+    fs.rmSync(path.join(SANDBOX_HOME, "wsl", distro), { recursive: true, force: true });
+  }, 60_000);
+
   it.runIf(SLOW)("an unanswered card times out with empty stdout (COUCOU_E2E_SLOW=1, ~2 min)", async () => {
     const from = readSideLog().length;
     const hook = runHook("PermissionRequest", permission("echo nobody-answers"), 130_000);
@@ -786,6 +1029,8 @@ describe("afterwards", () => {
     expect(pipeNames()).not.toContain(sidePipeName(sid));
     expect(webviewProcesses(side.webviewDir)).toEqual([]);
     expect(sideDirsLeft()).toEqual([]);
+    // And no fake VS Code window is left serving.
+    expect(sideExtensionPipes()).toEqual([]);
   });
 
   // Only now, with the routing proven above, is it safe to run the relay with

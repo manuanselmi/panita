@@ -6,9 +6,9 @@ the fourth moves the mouse and is opt-in.
 
 | Layer | Command | What it covers | Time |
 |---|---|---|---|
-| Rust unit tests | `npm run test:rust` | Relay output JSON and arguments (`--wsl-distro`), instance names, pipe naming, the permission decision path, settings.json merging and writing for Windows and WSL targets, WSL helpers (distro names, `wsl -l` decoding, probe parsing, `\wsl.localhost` paths, shell quoting), the VS Code window matcher and "open" plan, folder-URI encoding, window enumeration, file ingest | ~1 min cold, seconds warm |
-| TypeScript unit tests | `npm run test:unit` | `hooks.ts` (step labels, approval target, every hook event → its session, several sessions at once, where each "Open" goes), `state.ts` + `sessions.ts` (session creation, order and its dwell, approval and click promotion, `SessionEnd` and expiry, colours, panitas and "+N", integrations after the sessions, default view), `bridge.ts` (`openSession` and hook-target command names and arguments); type-checks the tests | seconds |
-| End to end | `npm run test:e2e` | The real `coucou-hook.exe` → named pipe → the real app → the island webview and back, driven over CDP — from Windows and from inside WSL — plus the settings window's hook install flow in a sandbox home | ~3–5 min cold, ~1–2 min warm |
+| Rust unit tests | `npm run test:rust` | Relay output JSON and arguments (`--wsl-distro`, `--wsl-ppid`), the relay's ancestry walk (synthetic process tables, and the real one against a Toolhelp snapshot), instance names, pipe naming, the permission decision path, settings.json merging and writing for Windows and WSL targets — including an install that predates `--wsl-ppid` reading as outdated and its update —, WSL helpers (distro names, `wsl -l` decoding, probe parsing, `/proc/<pid>/stat` parsing and the Linux chain, `\wsl.localhost` paths, shell quoting), terminal focus (what is remembered per session, the extension's pipe names, request and reply), the VS Code window matcher and "open" plan (with and without a terminal the extension showed), folder-URI encoding, the extension's status (`code --list-extensions` parsing, versions), window enumeration, file ingest | ~1 min cold, seconds warm |
+| TypeScript unit tests | `npm run test:unit` | `hooks.ts` (step labels, approval target, every hook event → its session, several sessions at once, where each "Open" goes), `state.ts` + `sessions.ts` (session creation, order and its dwell, approval and click promotion, `SessionEnd` and expiry, colours, panitas and "+N", integrations after the sessions, default view), `bridge.ts` (`openSession`, hook-target and extension command names and arguments), the companion VS Code extension (its pipe protocol, terminal matching, malformed input, and its `vscode` glue against a stand-in `vscode` module); type-checks the tests | seconds |
+| End to end | `npm run test:e2e` | The real `coucou-hook.exe` → named pipe → the real app → the island webview and back, driven over CDP — from Windows and from inside WSL — plus the settings window's hook install flow in a sandbox home, and the island's ↗ asking a fake VS Code window for the session's terminal | ~3–5 min cold, ~1–2 min warm |
 | Real input | `npm run test:input` | Hover-to-reveal, a real click not stealing the foreground. **Moves the mouse** — see below | ~2 min |
 
 `npm test` runs the first two.
@@ -91,18 +91,32 @@ reaches every Windows process started from it, whatever `WSLENV` says.
 ## Rust unit tests
 
 ```powershell
-npm run test:rust        # = cargo build --release -p coucou-hook && cargo test --workspace
+npm run test:rust        # = cargo build --release -p coucou-hook && npm run build:extension && cargo test --workspace
 ```
 
-Cargo has to be on `PATH` (`%USERPROFILE%\.cargo\bin`). The release relay is
-built first because the app's build script checks that the bundled resource
-`target/release/coucou-hook.exe` exists.
+Cargo has to be on `PATH` (`%USERPROFILE%\.cargo\bin`). The release relay and
+the companion VS Code extension's package are built first because the app's
+build script checks that the bundled resources —
+`target/release/coucou-hook.exe` and
+`vscode-extension/dist/coucou-terminal-focus.vsix` — exist.
+
+How much the relay's ancestry walk costs on this machine (it runs on every
+hook event), against a Toolhelp snapshot of every process:
+
+```powershell
+cargo test -p coucou-hook --release -- --nocapture ancestry_cost
+```
 
 No unit test touches the real install: the ingest test copies into a temporary
 inbox, the hooks tests read and write settings files in temporary folders
 (everything in `hooks.rs` works on a `Location`, a settings path plus how the
 command reads, for Windows and WSL alike), and `log::line` is a no-op under
 `cfg(test)`.
+
+The terminal-focus tests never look at real processes beyond their own: the
+walks run on made-up process tables (Windows PIDs and `/proc/<pid>/stat` lines,
+including command names with spaces and parentheses), and the relay's real
+walk is only checked on the test binary's own ancestry.
 
 Two tests touch the desktop, harmlessly. The window-enumeration test creates a
 handful of throwaway windows of its own — tool windows, off screen, shown
@@ -137,8 +151,21 @@ the relay forwards. No production code was changed to make it testable.
 
 `bridge.test.ts` tests the bridge itself, with `@tauri-apps/api/core`'s
 `invoke` mocked: the command names and argument keys the Rust side expects
-(`openSession` → `open_session { cwd, wslDistro }`, the optional hook `target`),
-and that a failed `openSession` resolves to `"failed"` rather than throwing.
+(`openSession` → `open_session { cwd, wslDistro, sessionId }`, the optional
+hook `target`, the extension's status and install), and that a failed
+`openSession` resolves to `"failed"` rather than throwing.
+
+`extension.test.ts` tests the companion VS Code extension
+(`vscode-extension/`). Its pipe server, `server.ts`, imports nothing from
+VS Code, so it runs as is: requests and their refusals, which PIDs a local, a
+Remote-WSL or another remote window looks at, the nearest ancestor winning,
+terminals that never report a PID, and the protocol over real named pipes
+(chunked and malformed input, an oversized request, a silent connection).
+`extension.ts`, the `vscode` glue, runs against `vscode-mock.ts`, which
+`vitest.config.ts` aliases `vscode` to: a local window, a Remote-WSL window and
+its distro, another remote, an unusable `COUCOU_INSTANCE`, and that
+deactivating closes the pipe. Those pipes are named for the instance
+`unittest` (`\\.\pipe\coucou-unittest-vscode-*`), which no Coucou looks at.
 
 Vitest 5 needs Node 22.12 or later (Node 20 is end-of-life).
 
@@ -151,12 +178,16 @@ npm run test:e2e
 What it does, in order:
 
 1. **Builds** `target/debug/coucou.exe` with the front end embedded
-   (`tauri build --debug --no-bundle`, so no Vite server) and
-   `target/release/coucou-hook.exe`. Incremental after the first run. It
+   (`tauri build --debug --no-bundle`, so no Vite server),
+   `target/release/coucou-hook.exe` and the companion VS Code extension's
+   `vscode-extension/dist/coucou-terminal-focus.vsix`. Incremental after the
+   first run. It
    shares `target/debug` with `npm run tauri dev`, so switching between the two
    costs a re-link of the app crate.
 2. **Launches the side instance `e2e`** (`COUCOU_INSTANCE=e2e`) with muted
    settings, a sandbox home for hook installs (`COUCOU_TEST_HOME=test-results\e2e\sandbox-home`),
+   a fake VS Code `code` command first on its `PATH` (`test-results\e2e\fake-code\code.cmd`,
+   which records its arguments and opens nothing),
    and `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<free port>`
    in that process's environment only. WebView2 appends this to the island's own
    `additionalBrowserArgs` from `tauri.conf.json` rather than replacing them —
@@ -196,24 +227,58 @@ What it does, in order:
      for a WSL session, a relative path) → `"failed"` and the matching
      `open session … refused` log line. That proves the command and its
      argument names end to end without focusing or opening anything;
+   - **terminal focus**, against a fake VS Code window (`fake-vscode.ts`: the
+     companion extension's own pipe server, run in the suite's process with
+     made-up terminals, on the side instance's pipe name). First, that the
+     side instance's `code` is the fake (`vscode_extension_status`). Then a
+     session in a folder that exists nowhere, sent through the real relay;
+     the island's ↗ clicked with nothing intercepted → the fake window is
+     asked with the relay's ancestry (nearest first: the suite's own process,
+     then its parent), shows the matching terminal with `show(false)`, and the
+     log says `terminal "e2e-terminal" focused in "<window>"` and
+     `terminal shown, window not raised` (no window on screen has that name,
+     and none is opened since the session is known to live in VS Code).
+     With a window that has no matching terminal, a wedged one (it takes the
+     connection and never answers: given up on after 1.5 s), then with no
+     window at all, ↗ is what it was before the extension: no VS Code window
+     for the folder → `code <cwd>`, answered by the fake. After `SessionEnd`
+     the terminal is forgotten (`no terminal recorded for it`);
    - **Settings → Claude Code, Windows row** (the settings window's page, over
      CDP, still hidden): the row points into the sandbox, **Install…** shows the
      diff, **Back up and write** writes the unchanged Windows command for every
      event, **Uninstall…** takes it out again;
+   - **Settings → Claude Code, VS Code terminal focus row**: it shows the fake
+     `code` (checked before clicking), "Not installed"; **Install** runs
+     `code --install-extension <the bundled .vsix> --force` — the fake records
+     it, and the .vsix is the real package this build made — and the row
+     turns "Installed <version>";
    - a Windows session's payload, as the island receives it, has no
-     `wsl_distro`;
+     `wsl_distro` — and no `ancestor_pids` or `wsl_ppid`, which the app keeps;
    - **from inside WSL** (skipped when WSL is missing or the distro is not
      running): the side instance's staged relay, run by a Linux `sh -c` with
      `--wsl-distro "$WSL_DISTRO_NAME"` exactly as installed → logged as
      `hook PreToolUse wsl=<distro>`, and the island's payload carries
      `wsl_distro` and the Linux cwd; a `PermissionRequest` from WSL →
      **Allow** → the documented allow JSON comes out on the Linux side;
+   - **terminal focus from WSL**: the installed command run by a child of a
+     Linux shell that then sleeps, so its `$PPID` is that shell and it is still
+     alive when ↗ is clicked. A fake Remote-WSL window, whose terminal's PID is
+     that shell's, is asked with the Linux chain the app read from `/proc` in
+     the distro (that shell first, then up) and the relay's Windows ancestry —
+     which, through interop, runs via the `wsl.exe` the suite started back to
+     the suite's own process — and shows the terminal;
    - **Settings → Claude Code, WSL row**, on a seeded settings.json with another
      tool's hook: **Install…** → diff with the relay's Linux path (from
-     `wslpath`) and the distro argument → **Back up and write**; the dated
-     backup holds the original bytes, the other hook and settings are intact;
-     then the installed `PreToolUse` command, read back from the file, is run by
-     a Linux shell and reaches the island; **Uninstall…** restores the original;
+     `wslpath`) and the distro and parent-PID arguments → **Back up and write**;
+     the dated backup holds the original bytes, the other hook and settings are
+     intact; then the installed `PreToolUse` command, read back from the file,
+     is run by a Linux shell and reaches the island; **Uninstall…** restores the
+     original;
+   - **an outdated WSL install**: a settings.json with every command as the
+     previous version wrote it (no `--wsl-ppid`) → the row says "Installed —
+     update available" → **Update…** shows the old and the new command in the
+     diff → **Back up and write** → every command is the current one, the
+     backup holds the old file, the row says "Installed";
    - no uncaught exception in the island.
 
    Two things the multi-session tests do to the page, both DOM-level: they
@@ -225,6 +290,15 @@ What it does, in order:
    because the session order holds still while the pointer is on the open
    island. The Rust cursor poll only speaks when the real mouse moves, so that
    holds unless someone moves the mouse over the island during the run.
+
+   The terminal-focus tests are the one place a ↗ reaches Rust for real
+   (`clickOpenUnintercepted`). Three things keep that harmless: the sessions'
+   folders exist nowhere, so no window on the desktop matches them and nothing
+   is activated; the side instance's `code` is the fake, proven by the first
+   of those tests before any click; and the only extension pipes a side
+   instance looks for are `coucou-<instance>-vscode-*` — the fake window's.
+   Real VS Code windows serve `coucou-vscode-*` (or their own instance's), and
+   the suite never connects to any pipe itself.
 5. **Quits the app** the way the tray's Quit does (so its tray icon goes away),
    force-kills only if that fails, waits for its WebView2 processes, and
    deletes `%LOCALAPPDATA%\Coucou-e2e`, `%APPDATA%\Coucou-e2e` and
@@ -246,7 +320,8 @@ Output lands in `test-results/e2e/` (git-ignored): screenshots of the island at
 each step (transparent PNGs of the 720×320 window), `app-output.log`,
 `side-instance.log` (the side instance's `coucou.log`), `island-console.log`,
 `build.log`, `sandbox-home/` (the settings files the install cases wrote, with
-their backups), and `real-install.json` (the before/after snapshot of the real
+their backups), `fake-code/` (the fake `code` and every call it got), and
+`real-install.json` (the before/after snapshot of the real
 install, with any lines its log gained during the run — those come from Claude
 Code sessions on the machine, including the one running the suite).
 
@@ -349,8 +424,33 @@ judge looks. These stay manual (or in the opt-in real-input scaffold):
   - Coucou's log says which step worked: `focused its VS Code window — set
     directly` or `— set with the foreground thread's input attached`. If it
     says Windows kept the foreground, the window's taskbar button should flash.
+- **Terminal focus with the real extension in the real VS Code** — installing
+  it changes the user's VS Code, and focusing a tab takes the foreground. By
+  hand, once:
+  - Settings → Claude Code → **VS Code terminal focus** → **Install**; the row
+    turns "Installed <version>"; reload the open VS Code windows (Developer:
+    Reload Window). In each, View → Output → "Coucou terminal focus" says
+    `serving \\.\pipe\coucou-vscode-<pid>-<hex>`.
+  - **A Windows terminal**: two terminal tabs in one window, `claude` in the
+    second, the first one in front; ↗ on that session → the second tab comes
+    forward, focused, and the window comes to the front. The log says
+    `terminal "<tab name>" focused in "<window>"`, then `focused its VS Code
+    window`.
+  - **Several terminals and several sessions in one window**, and a session
+    in a subfolder of a window on its parent (`…\GitHub\panita\windows` in a
+    window on `…\GitHub`) while another window is open on `panita`: each ↗
+    reaches its own tab, in the window that really has it.
+  - **A WSL terminal** in a Remote-WSL window (after **Update…** on the
+    `WSL · <distro>` row, so the installed command passes `--wsl-ppid`, and a
+    new `claude` in the distro): same as above. The log line names the
+    `[WSL: <distro>]` window.
+  - **A `wsl` profile tab in a local window** running `claude` inside the
+    distro: found through the relay's Windows ancestry (the tab's `wsl.exe`).
+  - Without the extension (uninstall it, or a window not yet reloaded): ↗ does
+    exactly what it did before (`no extension answered`).
 - **A real WSL Claude Code session end to end**: Settings → Claude Code → the
-  `WSL · <distro>` row → Install… on the distro's real `~/.claude/settings.json`,
+  `WSL · <distro>` row → Install… (or Update…, for an install from before
+  `--wsl-ppid`) on the distro's real `~/.claude/settings.json`,
   then `claude` inside the distro — events, an approval answered from the island,
   `hook … wsl=<distro>` in the log. This is also the first write through
   `\\wsl.localhost` (the suite's sandbox is a Windows folder): check the dated

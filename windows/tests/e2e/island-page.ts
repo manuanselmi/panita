@@ -193,6 +193,27 @@ export class IslandPage {
   }
 
   /**
+   * `element.click()` on a ↗ with nothing intercepted: `open_session` reaches
+   * Rust. Only for the terminal-focus tests, whose sessions live in folders
+   * that exist nowhere (no VS Code window can match them) and whose side
+   * instance has the fake `code` first on PATH — checked by the caller through
+   * `vscode_extension_status` before the first such click. So the most it can
+   * do is ask the suite's own fake extension, and record a call to the fake.
+   */
+  async clickOpenUnintercepted(which: "primary" | "second") {
+    const intercepted = await this.cdp.evaluate<boolean>(`!!window.__e2eRealFetch`);
+    if (intercepted) throw new Error("open_* commands are still intercepted; call restoreOpens() first");
+    const selector = which === "primary" ? ".view.overview .left .jump" : ".view.overview .others .jump";
+    const clicked = await this.cdp.evaluate<boolean>(`(() => {
+      const button = document.querySelector(${JSON.stringify(selector)});
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`);
+    if (!clicked) throw new Error(`no ↗ on the ${which} card`);
+  }
+
+  /**
    * From here on, every `open_*` command the page sends to Rust (open_session,
    * open_url, …) is recorded and answered here instead of reaching the app: a
    * test can click "Open" without a VS Code or Explorer window appearing on the

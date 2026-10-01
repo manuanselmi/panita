@@ -14,11 +14,18 @@
 //     reached through \\wsl.localhost\<distro>\…. The command is the same
 //     Windows relay, run through WSL interop by its Linux path, followed by
 //     `--wsl-distro "$WSL_DISTRO_NAME"` so the island knows where the session
-//     lives.
+//     lives, and `--wsl-ppid "$PPID"` so "Open" can find its terminal
+//     (terminal.rs).
 //
 // Everything that reads, merges, diffs and writes works on a `Location` — a
 // settings path plus how the command reads — so it is tested against temporary
 // folders and never against a real home.
+//
+// A command Coucou wrote earlier can differ from the one it would write now —
+// the WSL command gained `--wsl-ppid`, the relay can move. Such an install is
+// *outdated*: the settings window says so and offers the same preview →
+// backup → write-on-click flow to update it. Nothing is ever rewritten on its
+// own.
 
 use std::path::{Path, PathBuf};
 
@@ -61,6 +68,9 @@ pub struct HookStatus {
     /// `"Windows"` or `"WSL · <distro>"`.
     pub label: String,
     pub installed: bool,
+    /// Installed, but not with the commands this version would write (see
+    /// `is_current`): an Install… would change them.
+    pub outdated: bool,
     pub settings_path: String,
     /// The relay as this target runs it: a Windows path, or its Linux path.
     pub hook_path: String,
@@ -229,19 +239,30 @@ impl Location {
         }
     }
 
-    /// `'/mnt/c/…/coucou-hook.exe' <Event> --wsl-distro "$WSL_DISTRO_NAME"`.
+    /// `'/mnt/c/…/coucou-hook.exe' <Event> --wsl-distro "$WSL_DISTRO_NAME" --wsl-ppid "$PPID"`.
     pub fn wsl(settings: PathBuf, relay_linux: &str) -> Self {
         Location {
             settings,
             relay_path: relay_linux.to_string(),
             relay: wsl::sh_quote(relay_linux),
-            tail: format!(" {}", wsl::DISTRO_ARG),
+            tail: format!(" {} {}", wsl::DISTRO_ARG, wsl::PPID_ARG),
             via_wsl: true,
         }
     }
 
     fn command(&self, event: &str) -> String {
         format!("{} {event}{}", self.relay, self.tail)
+    }
+
+    /// The entry Coucou writes for `event` — exactly one per event.
+    fn entry(&self, event: &str, timeout: u64) -> Value {
+        json!({
+            "hooks": [{
+                "type": "command",
+                "command": self.command(event),
+                "timeout": timeout,
+            }]
+        })
     }
 
     fn backup_path(&self) -> PathBuf {
@@ -307,6 +328,22 @@ fn is_installed(settings: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Every event Coucou listens to has exactly one entry of ours, and it is the
+/// one `merged` would write now. Where in an event's list it sits, and what
+/// else is there, does not matter — so a current install never reads as
+/// outdated just because another tool added a hook after ours.
+fn is_current(settings: &Value, at: &Location) -> bool {
+    HOOK_EVENTS.iter().all(|(event, timeout)| {
+        let ours: Vec<&Value> = settings
+            .get("hooks")
+            .and_then(|h| h.get(*event))
+            .and_then(Value::as_array)
+            .map(|list| list.iter().filter(|e| entry_is_ours(e)).collect())
+            .unwrap_or_default();
+        ours.len() == 1 && *ours[0] == at.entry(event, *timeout)
+    })
+}
+
 /// Settings with Coucou's hooks added; everything else is left untouched.
 fn merged(existing: &Value, at: &Location) -> Value {
     let mut root = existing.as_object().cloned().unwrap_or_default();
@@ -323,13 +360,7 @@ fn merged(existing: &Value, at: &Location) -> Value {
             .cloned()
             .unwrap_or_default();
         list.retain(|entry| !entry_is_ours(entry));
-        list.push(json!({
-            "hooks": [{
-                "type": "command",
-                "command": at.command(event),
-                "timeout": timeout,
-            }]
-        }));
+        list.push(at.entry(event, *timeout));
         hooks.insert((*event).to_string(), Value::Array(list));
     }
 
@@ -455,13 +486,26 @@ fn refuse_links(at: &Location) -> Result<(), String> {
     Ok(())
 }
 
-pub fn status_at(at: &Location) -> (bool, Option<String>) {
+/// What a target's settings.json says about Coucou.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InstallState {
+    pub installed: bool,
+    /// Installed with commands other than the ones this version writes.
+    pub outdated: bool,
+    pub error: Option<String>,
+}
+
+pub fn status_at(at: &Location) -> InstallState {
+    let failed = |err| InstallState { installed: false, outdated: false, error: Some(err) };
     if let Err(err) = refuse_links(at) {
-        return (false, Some(err));
+        return failed(err);
     }
     match read_settings(&at.settings) {
-        Ok(v) => (is_installed(&v), None),
-        Err(err) => (false, Some(err)),
+        Ok(v) => {
+            let installed = is_installed(&v);
+            InstallState { installed, outdated: installed && !is_current(&v, at), error: None }
+        }
+        Err(err) => failed(err),
     }
 }
 
@@ -556,9 +600,10 @@ pub fn status_of(target: &Target, start: bool) -> HookStatus {
             return status;
         }
     };
-    let (installed, error) = status_at(&at);
-    status.installed = installed;
-    status.error = error;
+    let state = status_at(&at);
+    status.installed = state.installed;
+    status.outdated = state.outdated;
+    status.error = state.error;
     status.settings_path = at.settings.to_string_lossy().to_string();
     status.hook_ready = settings::hook_exe_path().exists();
     status.hook_path = at.relay_path;
@@ -816,7 +861,7 @@ mod tests {
         let at = wsl_at(Path::new(r"C:\h"));
         assert_eq!(
             at.command("PermissionRequest"),
-            r#"'/mnt/c/Users/Test User/AppData/Local/Coucou/bin/coucou-hook.exe' PermissionRequest --wsl-distro "$WSL_DISTRO_NAME""#
+            r#"'/mnt/c/Users/Test User/AppData/Local/Coucou/bin/coucou-hook.exe' PermissionRequest --wsl-distro "$WSL_DISTRO_NAME" --wsl-ppid "$PPID""#
         );
         let after = merged(&json!({}), &at);
         let entry = &after["hooks"]["PermissionRequest"][0]["hooks"][0];
@@ -826,7 +871,102 @@ mod tests {
         for (event, _) in HOOK_EVENTS {
             let cmd = after["hooks"][*event][0]["hooks"][0]["command"].as_str().unwrap();
             assert!(cmd.contains(&format!(" {event} --wsl-distro ")), "{cmd}");
+            assert!(cmd.ends_with(r#" --wsl-ppid "$PPID""#), "{cmd}");
         }
+    }
+
+    /// The WSL command as Coucou wrote it before `--wsl-ppid` existed.
+    fn old_wsl_entry(event: &str, timeout: u64) -> Value {
+        json!({ "hooks": [{
+            "type": "command",
+            "command": format!(
+                r#"'/mnt/c/Users/Test User/AppData/Local/Coucou/bin/coucou-hook.exe' {event} --wsl-distro "$WSL_DISTRO_NAME""#
+            ),
+            "timeout": timeout,
+        }]})
+    }
+
+    fn old_wsl_install() -> Value {
+        let mut hooks = Map::new();
+        for (event, timeout) in HOOK_EVENTS {
+            hooks.insert((*event).into(), json!([old_wsl_entry(event, *timeout)]));
+        }
+        json!({ "model": "opus", "hooks": hooks })
+    }
+
+    #[test]
+    fn an_install_from_before_wsl_ppid_is_outdated_and_only_in_wsl() {
+        let wsl = wsl_at(Path::new(r"C:\h"));
+        let old = old_wsl_install();
+        assert!(is_installed(&old));
+        assert!(!is_current(&old, &wsl), "the WSL command changed: outdated");
+        // Updating is an ordinary install: it replaces our entries, and only ours.
+        let updated = merged(&old, &wsl);
+        assert!(is_current(&updated, &wsl));
+        assert_eq!(updated["model"], "opus");
+        assert_eq!(updated["hooks"]["Stop"].as_array().unwrap().len(), 1);
+
+        // The Windows command never changed: an earlier Windows install is current.
+        let win = windows_at(Path::new(r"C:\h"));
+        let earlier = json!({ "hooks": {
+            "PreToolUse": [{ "hooks": [{ "type": "command",
+                "command": r#""C:/Users/Test User/AppData/Local/Coucou/bin/coucou-hook.exe" PreToolUse"#,
+                "timeout": 10 }] }]
+        }});
+        let mut full = merged(&json!({}), &win);
+        full["hooks"]["PreToolUse"] = earlier["hooks"]["PreToolUse"].clone();
+        assert!(is_current(&full, &win));
+    }
+
+    #[test]
+    fn current_means_exactly_one_entry_of_ours_per_event_wherever_it_sits() {
+        let at = wsl_at(Path::new(r"C:\h"));
+        let fresh = merged(&json!({}), &at);
+        assert!(is_current(&fresh, &at));
+
+        // Another tool's hook before or after ours changes nothing.
+        let mut shuffled = fresh.clone();
+        let other = json!({ "hooks": [{ "type": "command", "command": "other-tool" }] });
+        shuffled["hooks"]["Stop"].as_array_mut().unwrap().push(other.clone());
+        shuffled["hooks"]["PreToolUse"].as_array_mut().unwrap().insert(0, other);
+        assert!(is_current(&shuffled, &at));
+
+        // A missing event, a duplicate, a different timeout or an edited
+        // command: an Install… would change it, so it is outdated.
+        let mut missing = fresh.clone();
+        missing["hooks"].as_object_mut().unwrap().remove("SubagentStop");
+        let mut twice = fresh.clone();
+        let stop = twice["hooks"]["Stop"][0].clone();
+        twice["hooks"]["Stop"].as_array_mut().unwrap().push(stop);
+        let mut timeout = fresh.clone();
+        timeout["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"] = json!(60);
+        let mut edited = fresh.clone();
+        edited["hooks"]["Stop"][0]["hooks"][0]["async"] = json!(true);
+        for (name, v) in [("missing", &missing), ("twice", &twice), ("timeout", &timeout), ("edited", &edited)] {
+            assert!(is_installed(v), "{name}");
+            assert!(!is_current(v, &at), "{name}");
+            assert!(is_current(&merged(v, &at), &at), "{name}: reinstalling fixes it");
+        }
+        // Nothing installed is not "outdated" (status_at only asks when installed).
+        assert!(!is_current(&json!({}), &at));
+    }
+
+    #[test]
+    fn an_outdated_wsl_install_is_updated_through_the_same_consent_flow() {
+        let home = sandbox("outdated");
+        let at = wsl_at(&home);
+        let original = serde_json::to_vec_pretty(&old_wsl_install()).unwrap();
+        std::fs::write(&at.settings, &original).unwrap();
+        assert_eq!(status_at(&at), InstallState { installed: true, outdated: true, error: None });
+
+        let plan = preview_at(&at, true).unwrap();
+        // The diff shows exactly the change: old command out, new one in.
+        assert!(plan.diff.lines().any(|l| l.starts_with("- ") && l.ends_with(r#"--wsl-distro \"$WSL_DISTRO_NAME\"","#)));
+        assert!(plan.diff.lines().any(|l| l.starts_with("+ ") && l.contains(r#"--wsl-ppid \"$PPID\""#)));
+        let backup = write_at(&at, true, &plan.fingerprint).unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), original, "the backup holds the old install");
+        assert_eq!(status_at(&at), InstallState { installed: true, outdated: false, error: None });
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -926,7 +1066,7 @@ mod tests {
             assert_eq!(after["tui"]["x"], 1);
             let pre = after["hooks"]["PreToolUse"].as_array().unwrap();
             assert!(pre.iter().any(|e| serde_json::to_string(e).unwrap().contains("other-tool.exe")));
-            assert_eq!(status_at(&at), (true, None));
+            assert_eq!(status_at(&at), InstallState { installed: true, outdated: false, error: None });
             // What was written is exactly the text the preview promised.
             assert_eq!(after["hooks"]["Stop"][0]["hooks"][0]["command"], at.command("Stop"));
 
@@ -958,7 +1098,7 @@ mod tests {
             let plan = preview_at(&at, true).unwrap();
             let backup = write_at(&at, true, &plan.fingerprint).unwrap();
             assert!(!Path::new(&backup).exists());
-            assert!(status_at(&at).0);
+            assert!(status_at(&at).installed);
 
             // No temp file is ever left behind.
             let leftovers: Vec<_> = std::fs::read_dir(home.join(".claude"))
@@ -1014,7 +1154,7 @@ mod tests {
         let wsl = wsl_at(&home);
         assert!(preview_at(&wsl, true).unwrap_err().contains("symbolic link"));
         assert!(write_at(&wsl, true, "x").unwrap_err().contains("symbolic link"));
-        assert!(status_at(&wsl).1.unwrap().contains("symbolic link"));
+        assert!(status_at(&wsl).error.unwrap().contains("symbolic link"));
 
         let win = windows_at(&home);
         let plan = preview_at(&win, true).expect("a junctioned .claude is fine on Windows");

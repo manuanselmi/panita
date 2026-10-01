@@ -1,0 +1,31 @@
+{
+  "name": "terminal-focus",
+  "displayName": "Coucou — terminal focus",
+  "description": "Lets Coucou bring the terminal tab a Claude Code session runs in to the front when you click the session in the island.",
+  "version": "0.1.0",
+  "publisher": "coucou",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": true
+  },
+  "main": "./out/extension.js",
+  "files": [
+    "out/extension.js",
+    "out/server.js"
+  ]
+}

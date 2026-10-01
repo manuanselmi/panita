@@ -19,7 +19,7 @@ export const INTEGRATION_URLS: Record<string, string> = {
 export function openTask(task: AgentTask | null) {
   if (!task) return;
   if (isSession(task)) {
-    void Bridge.openSession(task.cwd || null, task.wslDistro);
+    void Bridge.openSession(task.cwd || null, task.wslDistro, task.sessionId || null);
   } else if (task.id === "integration_n8n") {
     void Bridge.openN8n();
   } else if (INTEGRATION_URLS[task.id]) {

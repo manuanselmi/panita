@@ -15,6 +15,8 @@ export interface TargetRow {
   path: string | null;
   buttons: string[];
   error: string | null;
+  /** The row's success notice, if any (the extension row). */
+  notice?: string | null;
 }
 
 /** The Claude Code section while a diff is on screen (or just after). */
@@ -51,6 +53,40 @@ export class SettingsPage {
         error: el.querySelector(".notice.err")?.textContent ?? null,
       };
     })()`);
+  }
+
+  /** The "VS Code terminal focus" row (the companion extension). */
+  extensionRow(): Promise<TargetRow | null> {
+    return this.cdp.evaluate<TargetRow | null>(`(() => {
+      const el = ${SECTION}?.querySelector('[data-extension="terminal-focus"]');
+      if (!el) return null;
+      return {
+        label: el.querySelector(".name")?.textContent ?? "",
+        state: el.querySelector(".state")?.textContent ?? "",
+        path: el.querySelector(".path")?.textContent ?? null,
+        buttons: [...el.querySelectorAll("button")].map((b) => b.textContent ?? ""),
+        error: el.querySelector(".notice.err")?.textContent ?? null,
+        notice: el.querySelector(".notice.ok")?.textContent ?? null,
+      };
+    })()`);
+  }
+
+  waitForExtensionRow(accept: (r: TargetRow) => boolean, timeoutMs = 20_000): Promise<TargetRow> {
+    return waitFor("the VS Code terminal focus row to be accepted", async () => {
+      const r = await this.extensionRow();
+      return r && accept(r) ? r : null;
+    }, timeoutMs, 150);
+  }
+
+  async clickInExtensionRow(label: string) {
+    const clicked = await this.cdp.evaluate<boolean>(`(() => {
+      const el = ${SECTION}?.querySelector('[data-extension="terminal-focus"]');
+      const b = [...(el?.querySelectorAll("button") ?? [])].find((b) => b.textContent === ${JSON.stringify(label)});
+      if (!b || b.disabled) return false;
+      b.click();
+      return true;
+    })()`);
+    if (!clicked) throw new Error(`no enabled "${label}" button in the VS Code terminal focus row`);
   }
 
   /** Every row's target id, in order. */

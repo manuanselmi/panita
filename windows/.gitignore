@@ -1,6 +1,9 @@
 node_modules/
 dist/
 target/
+# The companion VS Code extension, compiled (scripts/build-extension.mjs); its
+# .vsix lands in vscode-extension/dist/.
+vscode-extension/out/
 release/
 *.tsbuildinfo
 

@@ -49,6 +49,10 @@ const LXSS_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Lxss";
 /// Claude Code runs the hook command with expands the variable; the relay
 /// itself could not read it (interop only passes what WSLENV lists).
 pub const DISTRO_ARG: &str = r#"--wsl-distro "$WSL_DISTRO_NAME""#;
+/// And after that: the hook shell's parent, which is Claude Code itself — where
+/// the app starts walking up to the session's terminal (terminal.rs). Interop
+/// hides Linux processes from the relay, so the shell has to say it.
+pub const PPID_ARG: &str = r#"--wsl-ppid "$PPID""#;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Distro {
@@ -199,7 +203,12 @@ pub fn decode_utf16_lines(bytes: &[u8]) -> Vec<String> {
 
 /// The distros running right now. Asking does not start any of them.
 pub fn running() -> Result<Vec<String>, String> {
-    let out = run_wsl(&["-l", "--running", "-q"], LIST_TIMEOUT)?;
+    running_within(LIST_TIMEOUT)
+}
+
+/// `running`, with a deadline of the caller's choosing (a click cannot wait 10 s).
+pub fn running_within(timeout: Duration) -> Result<Vec<String>, String> {
+    let out = run_wsl(&["-l", "--running", "-q"], timeout)?;
     // With nothing running, wsl.exe prints a sentence and exits non-zero; that
     // is an answer ("none"), not a failure.
     if !out.ok {
@@ -243,6 +252,22 @@ pub fn probe(distro: &str, relay_windows: &Path) -> Result<Probe, String> {
     }
     parse_probe(&String::from_utf8_lossy(&out.stdout))
         .map_err(|e| format!("Unexpected answer from {distro}: {e}"))
+}
+
+/// Every process's `/proc/<pid>/stat` line inside `distro`, for terminal.rs to
+/// walk up from Claude Code to its terminal's shell. Read-only, and nothing
+/// from the caller reaches the command line but the (validated) distro name.
+/// Starts the distro if it is stopped: check `running` first.
+pub fn proc_stats(distro: &str, timeout: Duration) -> Result<String, String> {
+    if !is_valid_distro_name(distro) {
+        return Err(format!("\"{distro}\" is not a WSL distro name."));
+    }
+    // A process can exit between the glob and its read; that line is just missing.
+    let out = run_wsl(&["-d", distro, "-e", "sh", "-c", "cat /proc/[0-9]*/stat 2>/dev/null; exit 0"], timeout)?;
+    if !out.ok {
+        return Err(format!("Couldn't list the processes in {distro}."));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Two lines: `$HOME`, then the relay's Linux path. Both must be absolute,
@@ -304,12 +329,6 @@ pub fn sh_quote(text: &str) -> String {
 
 // ── Running wsl.exe ───────────────────────────────────────────────────────────
 
-struct Output {
-    ok: bool,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
 /// `%SystemRoot%\System32\wsl.exe`, never whatever `wsl` PATH turns up.
 fn wsl_exe() -> Result<PathBuf, String> {
     let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
@@ -319,15 +338,31 @@ fn wsl_exe() -> Result<PathBuf, String> {
 
 /// Runs wsl.exe with a deadline. Killing it on timeout only ends our own
 /// wsl.exe client; the distro and anything else running in it carry on.
-fn run_wsl(args: &[&str], timeout: Duration) -> Result<Output, String> {
-    let mut child = Command::new(wsl_exe()?)
-        .args(args)
+fn run_wsl(args: &[&str], timeout: Duration) -> Result<Captured, String> {
+    let mut command = Command::new(wsl_exe()?);
+    command.args(args);
+    run_captured(command, "wsl.exe", timeout)
+}
+
+/// What a helper process printed, and whether it exited successfully.
+pub struct Captured {
+    pub ok: bool,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// Runs a helper (wsl.exe, VS Code's `code` command) to completion with a
+/// deadline, without a console window and with nothing on its stdin. Killing it
+/// on timeout ends that process only, never anything it started. `what` names
+/// it in errors.
+pub fn run_captured(mut command: Command, what: &str, timeout: Duration) -> Result<Captured, String> {
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
-        .map_err(|e| format!("Couldn't run wsl.exe: {e}"))?;
+        .map_err(|e| format!("Couldn't run {what}: {e}"))?;
 
     // Drain both pipes on their own threads so a chatty child cannot block on
     // a full pipe while we wait for it.
@@ -356,12 +391,12 @@ fn run_wsl(args: &[&str], timeout: Duration) -> Result<Output, String> {
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("wsl.exe did not answer within {} s.", timeout.as_secs()));
+                return Err(format!("{what} did not answer within {} s.", timeout.as_secs()));
             }
-            Err(e) => return Err(format!("wsl.exe: {e}")),
+            Err(e) => return Err(format!("{what}: {e}")),
         }
     };
-    Ok(Output {
+    Ok(Captured {
         ok: status.success(),
         stdout: out_reader.join().unwrap_or_default(),
         stderr: err_reader.join().unwrap_or_default(),

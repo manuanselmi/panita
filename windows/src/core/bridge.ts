@@ -54,15 +54,22 @@ export const Bridge = {
   openInVSCode: (path: string | null) => call<boolean>("open_in_vscode", { path }),
 
   /**
-   * "Open" for a Claude Code session: brings the VS Code window it lives in to
-   * the front — restoring it, switching virtual desktop if it is on another
-   * one — and only opens the folder when no window has it (`code <cwd>`, or the
-   * WSL remote URI; Explorer without `code`). `cwd` and `wslDistro` are the
-   * hook payload's `cwd` and `wsl_distro` (null for a Windows session; `cwd` is
-   * then a Linux path). Never throws: anything that goes wrong is "failed".
+   * "Open" for a Claude Code session: with the companion VS Code extension
+   * installed, first shows the exact terminal tab the session runs in; then
+   * brings the VS Code window it lives in to the front — restoring it,
+   * switching virtual desktop if it is on another one — and only opens the
+   * folder when no window has it (`code <cwd>`, or the WSL remote URI; Explorer
+   * without `code`). `cwd`, `wslDistro` and `sessionId` are the hook payload's
+   * `cwd`, `wsl_distro` (null for a Windows session; `cwd` is then a Linux
+   * path) and `session_id` — the app remembers each session's terminal by it.
+   * Never throws: anything that goes wrong is "failed".
    */
-  openSession: async (cwd: string | null, wslDistro: string | null): Promise<OpenSessionResult> =>
-    (await call<OpenSessionResult>("open_session", { cwd, wslDistro })) ?? "failed",
+  openSession: async (
+    cwd: string | null,
+    wslDistro: string | null,
+    sessionId: string | null = null,
+  ): Promise<OpenSessionResult> =>
+    (await call<OpenSessionResult>("open_session", { cwd, wslDistro, sessionId })) ?? "failed",
 
   quit: () => call<void>("quit_app"),
 
@@ -90,6 +97,12 @@ export const Bridge = {
    */
   hooksApply: (install: boolean, fingerprint: string, target?: string) =>
     callOrThrow<string>("hooks_apply", { install, fingerprint, target }),
+
+  // ── The companion VS Code extension (terminal focus) ─────────────────────
+  /** Whether VS Code has it (`code --list-extensions`). Runs VS Code's CLI: only when the settings window shows. */
+  vscodeExtensionStatus: () => call<ExtensionStatus>("vscode_extension_status"),
+  /** `code --install-extension <bundled vsix> --force` — only ever from the Install / Update button. */
+  vscodeExtensionInstall: () => callOrThrow<string>("vscode_extension_install"),
 
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
@@ -124,7 +137,9 @@ export const Bridge = {
  * - `opened`: no window had it, `code` was asked to open the folder;
  * - `explorer`: no window and no `code` on PATH, Explorer shows the folder;
  * - `failed`: nothing happened — bad input, a launch that failed, or Windows
- *   refused to bring the window forward (its taskbar button flashes instead).
+ *   refused to bring the window forward (its taskbar button flashes instead);
+ *   or the extension showed the session's terminal but its window could not
+ *   be told apart by title (a custom `window.title`), so it was not raised.
  */
 export type OpenSessionResult = "focused" | "opened" | "explorer" | "failed";
 
@@ -158,6 +173,8 @@ export interface HookStatus {
   target: string;
   label: string;
   installed: boolean;
+  /** Installed, but with commands an older Coucou wrote: Install… would update them. */
+  outdated: boolean;
   settingsPath: string;
   /** The relay as this target runs it: a Windows path, or its Linux path. */
   hookPath: string;
@@ -165,6 +182,19 @@ export interface HookStatus {
   /** False for a stopped WSL distro that was not started: `installed` is unknown. */
   checked: boolean;
   /** Why the target cannot be read right now (WSL unreachable, invalid JSON…). */
+  error: string | null;
+}
+
+export interface ExtensionStatus {
+  /** The `code` command found on PATH; null without one. */
+  codePath: string | null;
+  /** The version VS Code has installed; null when it has none. */
+  installed: string | null;
+  /** The version this build of Coucou ships. */
+  bundled: string;
+  /** The bundled .vsix; null if this build has none. */
+  vsixPath: string | null;
+  upToDate: boolean;
   error: string | null;
 }
 
