@@ -452,6 +452,20 @@ export class BotEngine {
     this.morph = 0;
   }
 
+  /**
+   * True while a one-off animation (a tween: a blink, a hop, a roll) or a
+   * particle is under way. Unlike `busy`, a mini Mochi is not settling just for
+   * being a mini: it has a resting pose to come back to.
+   */
+  get settling(): boolean {
+    return (
+      this.tweens.size > 0 ||
+      this.particles.length > 0 ||
+      // A wink or a squint that has not run its course yet.
+      (this.eyeOverride != null && Number.isFinite(this.eyeOverrideUntil))
+    );
+  }
+
   /** True while anything is still moving — lets the island stop its RAF loop. */
   get busy(): boolean {
     return (

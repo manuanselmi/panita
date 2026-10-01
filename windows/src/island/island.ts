@@ -13,7 +13,9 @@ import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import { BotEngine, hexToRGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
-import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
+import {
+  createMiniBot, miniBotsSettling, pruneMiniBots, syncMiniBotStates, tickMiniBots,
+} from "../mochi/minibots";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
@@ -718,7 +720,8 @@ export class Island {
       ? settling
       : settling ||
         !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
-        greetingActive || this.engine.busy || UploadSeq.isActive || viewBusy;
+        greetingActive || this.engine.busy || UploadSeq.isActive || viewBusy ||
+        miniBotsSettling();
 
     if (busy) {
       requestAnimationFrame(this.frame);

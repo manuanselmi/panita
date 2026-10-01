@@ -85,3 +85,15 @@ export function tickMiniBots(dt: number) {
 }
 
 export const miniBotCount = () => live.size;
+
+/**
+ * True while a mini Mochi on the page is mid-animation. The island's frame loop
+ * waits for these: it used to stop on its own Mochi alone, and a mini created a
+ * frame earlier froze in the middle of its first blink, eyes shut.
+ */
+export function miniBotsSettling(): boolean {
+  for (const mb of live.values()) {
+    if (mb.canvas.isConnected && mb.engine.settling) return true;
+  }
+  return false;
+}
