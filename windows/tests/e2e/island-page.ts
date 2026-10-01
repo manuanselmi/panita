@@ -97,6 +97,26 @@ export class IslandPage {
     return this.cdp.evaluate<string>(`document.querySelector(".view.overview .ticker")?.textContent ?? ""`);
   }
 
+  /**
+   * The ticker rows a person can actually see, top to bottom: for each row with
+   * any real opacity, the copy of its text that is showing (shimmering or dim,
+   * whichever is more opaque) and the vertical span it is drawn on.
+   */
+  tickerRows(): Promise<{ text: string; top: number; bottom: number }[]> {
+    return this.cdp.evaluate(`(() => {
+      const opacity = (el) => Number(getComputedStyle(el).opacity);
+      return [...document.querySelectorAll(".view.overview .ticker .ticker-row")]
+        .filter((row) => opacity(row) > 0.5)
+        .map((row) => {
+          const shown = [...row.querySelectorAll(".tick-text")]
+            .reduce((a, b) => (opacity(b) > opacity(a) ? b : a));
+          const r = shown.getBoundingClientRect();
+          return { text: shown.textContent ?? "", top: r.top, bottom: r.bottom };
+        })
+        .sort((a, b) => a.top - b.top);
+    })()`);
+  }
+
   box(): Promise<Box> {
     return this.cdp.evaluate<Box>(`(() => {
       const r = document.getElementById("island").getBoundingClientRect();

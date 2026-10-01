@@ -102,15 +102,15 @@ afterEach(() => {
 
 describe("step labels (PreToolUse)", () => {
   const cases: [string, Payload, string][] = [
-    ["Bash", { command: "npm test" }, "Exécute · npm test"],
-    ["PowerShell", { command: "Get-ChildItem" }, "Exécute · Get-ChildItem"],
-    ["Bash", { command: "x".repeat(80) }, `Exécute · ${"x".repeat(40)}`],
-    ["Read", { file_path: String.raw`C:\repo\src\main.ts` }, "Lit · main.ts"],
-    ["Write", { file_path: "/home/me/notes.md", content: "…" }, "Écrit · notes.md"],
-    ["LS", { path: "C:/repo/src/" }, "Liste · src"],
-    ["WebSearch", { query: "tauri single instance" }, "Recherche web · tauri single instance"],
+    ["Bash", { command: "npm test" }, "Ejecuta · npm test"],
+    ["PowerShell", { command: "Get-ChildItem" }, "Ejecuta · Get-ChildItem"],
+    ["Bash", { command: "x".repeat(80) }, `Ejecuta · ${"x".repeat(40)}`],
+    ["Read", { file_path: String.raw`C:\repo\src\main.ts` }, "Lee · main.ts"],
+    ["Write", { file_path: "/home/me/notes.md", content: "…" }, "Escribe · notes.md"],
+    ["LS", { path: "C:/repo/src/" }, "Lista · src"],
+    ["WebSearch", { query: "tauri single instance" }, "Busca en la web · tauri single instance"],
     // Grep's `pattern` is not one of the fields a step shows.
-    ["Grep", { pattern: "TODO" }, "Recherche"],
+    ["Grep", { pattern: "TODO" }, "Busca texto"],
     ["mcp__linear__get_issue", { id: "ABC-1" }, "mcp__linear__get_issue"],
   ];
 

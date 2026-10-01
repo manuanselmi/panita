@@ -143,8 +143,37 @@ describe(`side instance "${INSTANCE}"`, () => {
 
     const view = await page.waitForView("the overview naming the session", (v) => v.classes.includes("overview") && v.who === PROJECT);
     expect(view.text).toContain("Claude Code");
-    await waitFor("the ticker to show the Bash step", async () => (await page.tickerText()).includes("Exécute · echo hello-e2e"));
+    await waitFor("the ticker to show the Bash step", async () => (await page.tickerText()).includes("Ejecuta · echo hello-e2e"));
     await page.screenshot("02-working");
+  });
+
+  it("ticker rows never draw on top of each other", async () => {
+    // Regression: the dim copy of a completed step took its static position, one
+    // line box below its own row, and landed on the current step (ticker.ts).
+    // Only steps wider than the row trigger it — a short text leaves room for the
+    // dim copy on the same line — so both steps here are long, like real commands.
+    // Measured on the open overview: what a person actually looks at.
+    const long = (n: number) => `step${n}; cd C:/Users/someone/Documents/GitHub/project && git status --short`;
+    for (const n of [1, 2]) {
+      const run = await runHook("PreToolUse", base({ tool_name: "Bash", tool_input: { command: long(n) } }));
+      expect(run).toMatchObject({ code: 0, stdout: "" });
+    }
+    await waitFor("the ticker to show the second long step", async () => (await page.tickerText()).includes("step2;"));
+    await page.emit("tray", "open");
+    await page.waitForView("the overview to open", (v) => v.classes.includes("overview") && v.who === PROJECT);
+    await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
+    const rows = await waitFor("the ticker to rest with two visible rows", async () => {
+      const before = await page.tickerRows();
+      await sleep(150);
+      const after = await page.tickerRows();
+      const drawn = after.length >= 2 && after.every((r) => r.bottom > r.top);
+      return drawn && JSON.stringify(before) === JSON.stringify(after) ? after : null;
+    });
+    await page.screenshot("02b-ticker-open");
+    for (let i = 1; i < rows.length; i++) {
+      const [upper, lower] = [rows[i - 1], rows[i]];
+      expect(lower.top, `rows overlap: ${JSON.stringify(rows)}`).toBeGreaterThanOrEqual(upper.bottom - 0.5);
+    }
   });
 
   it("PermissionRequest → Allow prints the documented allow JSON", async () => {

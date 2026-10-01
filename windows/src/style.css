@@ -469,6 +469,9 @@ body {
 }
 
 .ticker-row .tick-text {
+  /* Block, so text-overflow applies: as an inline box the current step was cut
+     mid-letter while the completed one (absolute, hence blockified) got its "…". */
+  display: block;
   font: 500 13px var(--font);
   white-space: nowrap;
   overflow: hidden;

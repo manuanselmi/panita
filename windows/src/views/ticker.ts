@@ -36,9 +36,13 @@ function makeRow(): Row {
   check.style.position = "absolute";
   chevron.style.position = "absolute";
   const shimmer = h("span", { class: "tick-text shimmer" });
+  // The dim copy sits exactly on top of the shimmering one and the two crossfade.
+  // `top:0` is load-bearing: without it the absolute span takes its static
+  // position, one line box below the shimmer text, so a completed step was drawn
+  // a few pixels above the current one and the two always overlapped.
   const dim = h("span", {
     class: "tick-text",
-    style: "position:absolute;left:0;right:0;color:#6b7079",
+    style: "position:absolute;top:0;left:0;right:0;color:#6b7079",
   });
   const el = h(
     "div",
