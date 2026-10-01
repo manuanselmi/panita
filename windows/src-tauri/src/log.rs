@@ -8,6 +8,11 @@ use windows::Win32::System::SystemInformation::GetLocalTime;
 use crate::settings;
 
 pub fn line(message: impl AsRef<str>) {
+    // Unit tests run code that logs, on machines where Coucou is installed. They
+    // must never append to a real user's log.
+    if cfg!(test) {
+        return;
+    }
     let t = unsafe { GetLocalTime() };
     let stamp = format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
