@@ -125,9 +125,17 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    // Sessions running inside WSL say so (coucou-hook --wsl-distro). Logged so
+    // "is my WSL session reaching Coucou?" has an answer; only a well-formed
+    // distro name ever reaches the log line.
+    let origin = match payload.get("wsl_distro").and_then(Value::as_str) {
+        Some(d) if crate::wsl::is_valid_distro_name(d) => format!(" wsl={d}"),
+        Some(_) => " wsl=?".to_string(),
+        None => String::new(),
+    };
 
     if event != "PermissionRequest" {
-        log::line(format!("hook {event}"));
+        log::line(format!("hook {event}{origin}"));
         let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
         let _ = pipe.disconnect();
         return;
@@ -140,7 +148,7 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
         pending.0.lock().unwrap().insert(id.clone(), tx);
     }
     payload["request_id"] = json!(id);
-    log::line(format!("hook PermissionRequest id={id}"));
+    log::line(format!("hook PermissionRequest id={id}{origin}"));
     let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
 
     let decision = wait_for_decision(&id, &mut rx).await;
