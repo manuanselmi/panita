@@ -1,14 +1,15 @@
 // Claude Code hook events → island state.
 // Port of HookServer.processEvent / processPermissionRequest from the macOS app.
 // Difference from macOS: no terminal filter. On Windows the hook fires from any
-// terminal (Windows Terminal, VS Code, PowerShell…) and all of them are handled.
+// terminal (Windows Terminal, VS Code, PowerShell, WSL…) and all of them are
+// handled — each Claude Code session as its own task (State.sessions).
 
 import { Bridge, onEvent } from "../core/bridge";
+import { sessionKey } from "../core/sessions";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { State, type PillBadge, type SessionTask } from "../core/state";
+import type { IslandViewName } from "../core/layout";
 import type { Island } from "./island";
-
-const CLAUDE_ID = "integration_claude";
 
 /** Clears the approval card if no decision was made before the hook gave up. */
 let pendingTimeout: number | null = null;
@@ -18,12 +19,21 @@ interface HookPayload {
   request_id?: string;
   session_id?: string;
   cwd?: string;
+  /** Set by the relay for a session running inside WSL; empty or absent on Windows. */
+  wsl_distro?: string;
   message?: string;
   /** UserPromptSubmit carries `prompt`; `message` belongs to Notification/Stop. */
   prompt?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
 }
+
+/** The events this file handles. Anything else changes nothing — it does not even create a session. */
+const HANDLED = new Set([
+  "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+  "Notification", "Stop", "StopFailure", "SessionEnd", "SubagentStart", "SubagentStop",
+  "PermissionRequest",
+]);
 
 const PROJECT_ALIASES: Record<string, string> = {
   "notch-buddy": "Notch Buddy",
@@ -105,20 +115,16 @@ function approvalTarget(tool: string, input: Record<string, unknown>): string {
   return tool;
 }
 
-function upsert(projectName: string, cwd: string) {
-  const t = State.tasks.find((x) => x.id === CLAUDE_ID);
-  if (!t) return;
-  t.name = projectName;
-  if (cwd) t.sessionCwd = cwd;
-}
-
-function clearSession() {
-  const t = State.tasks.find((x) => x.id === CLAUDE_ID);
-  if (!t) return;
-  t.steps = [];
-  t.stepIndex = 0;
-  t.name = "VS Code";
-  t.pillBadge = null;
+/** What an event says about its session: which one it is, and where it runs. */
+function describeSession(payload: HookPayload) {
+  const cwd = payload.cwd ?? "";
+  return {
+    key: sessionKey(payload.session_id, cwd),
+    sessionId: (payload.session_id ?? "").trim(),
+    cwd,
+    name: aliasProjectName(lastPathComponent(cwd) || "Session"),
+    wslDistro: payload.wsl_distro?.trim() || null,
+  };
 }
 
 export function registerHookHandlers(island: Island) {
@@ -135,13 +141,12 @@ function handleHook(island: Island, payload: HookPayload) {
   }
 
   const name = payload.hook_event_name ?? "";
-  const cwd = payload.cwd ?? "";
-  const raw = lastPathComponent(cwd);
-  const projectName = aliasProjectName(raw || "Session");
-  const focused = State.focusId === CLAUDE_ID;
+  if (!HANDLED.has(name)) return;
+  const event = describeSession(payload);
+  const now = Date.now();
 
   /** Alerts force the island open; work events only reveal the compact island. */
-  const surface = (view: Parameters<Island["alert"]>[0], isAlert: boolean) => {
+  const surface = (view: IslandViewName, isAlert: boolean) => {
     if (State.mode === "expanded") {
       if (isAlert) island.setView(view);
     } else if (isAlert) {
@@ -151,138 +156,179 @@ function handleHook(island: Island, payload: HookPayload) {
     }
   };
 
+  /**
+   * Opens the finished / error card about `s`. It never covers an approval card
+   * (that one is waiting for a click), another session's card that is still up
+   * (its buttons may be under the pointer), or an integration the user chose to
+   * look at: `s` gets a badge on its panita instead.
+   */
+  const alertAbout = (s: SessionTask, view: IslandViewName, badge: PillBadge) => {
+    const otherCardUp =
+      State.mode === "expanded" &&
+      (State.view === "finished" || State.view === "error") &&
+      State.alertTask != null &&
+      State.alertTask !== s;
+    if (State.pendingApproval || State.focusId || otherCardUp) {
+      s.pillBadge = badge;
+      return;
+    }
+    State.alertTask = s;
+    s.pillBadge = null;
+    surface(view, true);
+  };
+
+  if (name === "SessionEnd") {
+    // Gone from the island at once. A card about it that is still up keeps its
+    // own reference, so an approval stays answerable.
+    State.removeSession(event.key, now);
+    State.notify();
+    return;
+  }
+
+  if (name === "PermissionRequest") {
+    handlePermission(island, payload, event, now);
+    State.notify();
+    return;
+  }
+
+  const s = State.sessionEvent(event, now);
+  // A session that was asking in its terminal (a declined second request, see
+  // handlePermission) has been answered once it does anything but notify.
+  if (s.pillBadge === "approval" && name !== "Notification") s.pillBadge = null;
+
   switch (name) {
     case "SessionStart":
-      upsert(projectName, cwd);
       surface("overview", false);
       Sound.play("work");
       break;
 
     case "UserPromptSubmit": {
-      upsert(projectName, cwd);
-      State.updateTask(CLAUDE_ID, "thinking");
+      s.state = "thinking";
       // The field is `prompt`; reading `message` meant this step was always blank.
       const asked = payload.prompt ?? payload.message;
-      if (asked) State.appendStep(CLAUDE_ID, asked.slice(0, 60));
+      if (asked) State.appendStep(s.id, asked.slice(0, 60));
       surface("overview", false);
       break;
     }
 
     case "PreToolUse": {
-      upsert(projectName, cwd);
-      State.updateTask(CLAUDE_ID, "working");
+      s.state = "working";
       const tool = payload.tool_name ?? "Tool";
-      State.appendStep(CLAUDE_ID, stepLabel(tool, payload.tool_input ?? {}));
+      State.appendStep(s.id, stepLabel(tool, payload.tool_input ?? {}));
       surface("overview", false);
       break;
     }
 
     case "PostToolUse":
-      State.updateTask(CLAUDE_ID, "working");
+      s.state = "working";
       break;
 
     case "PostToolUseFailure":
-      State.updateTask(CLAUDE_ID, "working");
-      State.appendStep(CLAUDE_ID, "⚠ failed");
+      s.state = "working";
+      State.appendStep(s.id, "⚠ failed");
       break;
 
     case "Notification": {
       const message = payload.message ?? "";
       const lower = message.toLowerCase();
       if (lower.includes("rate limit") || lower.includes("limite d")) {
-        State.updateTask(CLAUDE_ID, "ratelimit");
+        s.state = "ratelimit";
         Sound.play("rate");
       } else if (message.endsWith("?")) {
-        State.updateTask(CLAUDE_ID, "question");
-        State.appendStep(CLAUDE_ID, message);
+        s.state = "question";
+        State.appendStep(s.id, message);
       }
       break;
     }
 
     case "Stop":
-      State.updateTask(CLAUDE_ID, "finished");
-      if (payload.message) State.appendStep(CLAUDE_ID, payload.message.slice(0, 60));
+      // Finished, not gone: the session stays on the island until SessionEnd.
+      s.state = "finished";
+      if (payload.message) State.appendStep(s.id, payload.message.slice(0, 60));
       Sound.play("finish");
-      if (focused) surface("finished", true);
-      else State.setPillBadge(CLAUDE_ID, "finished");
+      alertAbout(s, "finished", "finished");
       window.setTimeout(() => {
-        State.updateTask(CLAUDE_ID, "idle");
-        State.setPillBadge(CLAUDE_ID, null);
+        // Unless it has moved on since: a new prompt within five seconds is not idle.
+        if (s.state === "finished") s.state = "idle";
+        if (s.pillBadge === "finished") s.pillBadge = null;
+        State.notify();
       }, 5200);
       break;
 
     case "StopFailure":
-      State.updateTask(CLAUDE_ID, "error");
+      s.state = "error";
       Sound.play("error");
-      if (focused) surface("error", true);
-      else State.setPillBadge(CLAUDE_ID, "error");
-      break;
-
-    case "SessionEnd":
-      State.updateTask(CLAUDE_ID, "idle");
-      clearSession();
+      alertAbout(s, "error", "error");
       break;
 
     case "SubagentStart":
-      State.appendStep(CLAUDE_ID, "+ subagent");
+      State.appendStep(s.id, "+ subagent");
       break;
 
     case "SubagentStop":
-      State.appendStep(CLAUDE_ID, "• subagent done");
-      break;
-
-    case "PermissionRequest": {
-      const requestId = payload.request_id ?? "";
-      // One card, one request. A second one must never quietly replace the first
-      // — that would leave a human staring at request B while request A waits for
-      // a decision nobody can give. Hand it straight back to the terminal.
-      if (State.pendingApproval && State.pendingApproval.requestId !== requestId) {
-        if (requestId) void Bridge.approvalDecline(requestId);
-        break;
-      }
-      upsert(projectName, cwd);
-      if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
-      const tool = payload.tool_name ?? "Tool";
-      const input = payload.tool_input ?? {};
-      State.pendingApproval = {
-        requestId,
-        sessionId: payload.session_id ?? "",
-        tool,
-        command: approvalTarget(tool, input),
-      };
-      // The relay's short ack window closes in 800 ms; everything below this
-      // line is synchronous, so the card really is up by the time it lands.
-      if (requestId) void Bridge.approvalAck(requestId);
-      State.updateTask(CLAUDE_ID, "approval");
-      State.isPinned = true;
-      Sound.play("approval");
-      if (focused) {
-        island.alert("approval");
-      } else {
-        // Another agent holds the view, so the card would yank it away. The badge
-        // is the signal instead — but it has to be on screen for that to mean
-        // anything, hence the reveal. We just told the relay a human can act.
-        State.setPillBadge(CLAUDE_ID, "approval");
-        island.reveal();
-      }
-      // Coucou answers within 108 s or not at all; after that the terminal has
-      // taken over and the card would be lying.
-      pendingTimeout = window.setTimeout(() => {
-        pendingTimeout = null;
-        if (!State.pendingApproval) return;
-        State.pendingApproval = null;
-        State.isPinned = false;
-        island.dropPin();
-        State.updateTask(CLAUDE_ID, "working");
-        State.setPillBadge(CLAUDE_ID, null);
-        if (State.view === "approval") island.setView(State.defaultView());
-        State.notify();
-      }, 110_000);
-      break;
-    }
-
-    default:
+      State.appendStep(s.id, "• subagent done");
       break;
   }
   State.notify();
 }
+
+function handlePermission(
+  island: Island,
+  payload: HookPayload,
+  event: ReturnType<typeof describeSession>,
+  now: number,
+) {
+  const requestId = payload.request_id ?? "";
+  // One card, one request. A second one must never quietly replace the first
+  // — that would leave a human staring at request B while request A waits for
+  // a decision nobody can give. Hand it straight back to the terminal.
+  if (State.pendingApproval && State.pendingApproval.requestId !== requestId) {
+    if (requestId) void Bridge.approvalDecline(requestId);
+    // Then, purely for the eye — the answer above has already gone out: badge
+    // the session now asking in its terminal, so it can be told apart from the
+    // others. The badge goes with that session's next event.
+    State.sessionEvent(event, now).pillBadge = "approval";
+    return;
+  }
+
+  const s = State.sessionEvent(event, now);
+  if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
+  const tool = payload.tool_name ?? "Tool";
+  const input = payload.tool_input ?? {};
+  State.pendingApproval = {
+    requestId,
+    sessionId: payload.session_id ?? "",
+    tool,
+    command: approvalTarget(tool, input),
+    session: s,
+  };
+  // The relay's short ack window closes in 800 ms; everything below this
+  // line is synchronous, so the card really is up by the time it lands.
+  if (requestId) void Bridge.approvalAck(requestId);
+  s.state = "approval";
+  s.pillBadge = null;
+  // The asking session takes the left card at once, past the dwell and past an
+  // integration the user was looking at: the card in front of them is about it.
+  State.focusId = null;
+  State.reorderSessions(now, true);
+  State.isPinned = true;
+  Sound.play("approval");
+  island.alert("approval");
+
+  // Coucou answers within 108 s or not at all; after that the terminal has
+  // taken over and the card would be lying.
+  pendingTimeout = window.setTimeout(() => {
+    pendingTimeout = null;
+    const req = State.pendingApproval;
+    if (!req) return;
+    State.pendingApproval = null;
+    State.isPinned = false;
+    island.dropPin();
+    if (req.session.state === "approval") req.session.state = "working";
+    // No longer held first; the usual order (and its dwell) applies again.
+    State.reorderSessions();
+    if (State.view === "approval") island.setView(State.defaultView());
+    State.notify();
+  }, 110_000);
+}
+

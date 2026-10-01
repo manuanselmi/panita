@@ -5,7 +5,7 @@
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
-import { State, type AgentTask } from "../core/state";
+import { State, isSession, type AgentTask, type PillBadge } from "../core/state";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
@@ -15,10 +15,14 @@ import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations
 export interface ViewActions {
   setView(v: IslandViewName): void;
   collapse(): void;
-  setFocus(id: string): void;
+  /** A panita or the second session was clicked: it takes the left card. */
+  select(id: string): void;
+  /** "Open terminal" on the finished card: the session that finished. */
   openTerminal(): void;
-  /** The ↗ button: opens whatever the focused pill points at. */
+  /** ↗ on the left card: the session there, or the integration's page. */
   openTarget(): void;
+  /** ↗ on the second session, top of the right card. */
+  openSecond(): void;
   openUrl(url: string): void;
   decide(d: "allow" | "deny"): void;
   toggleSound(): void;
@@ -65,10 +69,29 @@ function btn(
 function agentWho(task: AgentTask | null, label: string): HTMLElement {
   const row = h("div", { class: "who-row" });
   if (task) {
-    row.append(dot(task.color, 8), h("span", { class: "n", text: task.name }));
+    row.append(dot(task.color, 8), h("span", { class: "n", text: task.name, title: whereTitle(task) }));
   }
   row.append(h("span", { text: label }));
   return row;
+}
+
+/** Tooltip on a session's name: where it runs, so two "api" folders can be told apart. */
+function whereTitle(task: AgentTask): string | undefined {
+  if (!isSession(task)) return undefined;
+  if (!task.cwd) return task.wslDistro ? `WSL · ${task.wslDistro}` : undefined;
+  return task.wslDistro ? `${task.cwd} (WSL · ${task.wslDistro})` : task.cwd;
+}
+
+const BADGE_COLORS: Record<PillBadge, string> = { approval: "#F5A524", finished: "#22C55E", error: "#F4505E" };
+const BADGE_ICONS: Record<PillBadge, string> = { approval: ICONS.bang, finished: ICONS.check, error: ICONS.xmark };
+
+/** The little status disc on a panita (and next to the second session's name). */
+function badgeEl(kind: PillBadge): HTMLElement {
+  const color = BADGE_COLORS[kind];
+  const inner = h("i", { style: `background:${color}` }, svg(BADGE_ICONS[kind], 6, { stroke: kind === "finished" ? 3 : 0 }));
+  const badge = h("div", { class: "pill-badge", "data-badge": kind }, inner);
+  badge.style.boxShadow = `0 0 4px ${color}99`;
+  return badge;
 }
 
 function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElement {
@@ -117,6 +140,11 @@ export function buildHeader(actions: ViewActions): ViewHost {
 }
 
 // ── Overview ──────────────────────────────────────────────────────────────────
+//
+// Left card: the primary — a Claude Code session with its ticker, or the card
+// of an integration the user clicked. Right card: the second session and the
+// panitas (buildOthers). Who goes where is State's business (focusTask,
+// secondSession, panitas); this only draws it.
 
 function buildOverview(actions: ViewActions): ViewHost {
   const ticker = new Ticker();
@@ -129,19 +157,19 @@ function buildOverview(actions: ViewActions): ViewHost {
     svg(ICONS.arrowUpRight, 8),
   );
   const left = card(null, leftBody, jump);
-  const pills = h("div", { class: "pills" });
-  const right = card(null, pills);
+  const others = buildOthers(actions);
+  const right = card(null, others.el);
 
   const el = h("div", { class: "view overview" },
     h("div", { class: "left" }, left),
     h("div", { class: "right" }, right),
   );
 
-  let pillIds = "";
   let detailOpen = false;
   let lastFocus: string | null = null;
   let mode: "ticker" | "card" | null = null;
   let cardKey = "";
+  let whoKey = "";
 
   const hooks: IntegrationCardHooks = {
     get detailOpen() {
@@ -172,35 +200,37 @@ function buildOverview(actions: ViewActions): ViewHost {
         lastFocus = task?.id ?? null;
         detailOpen = false;
         cardKey = "";
+        whoKey = "";
         mode = null;
+        // Another session on the left: show its own steps, without scrolling
+        // through the previous one's.
+        ticker.reset();
       }
 
-      // VS Code with a live Claude Code session keeps the ticker; every other
-      // pill shows its own card, exactly like IntegrationCardView.
-      const sessionActive =
-        task?.id === "integration_claude" && (task.state !== "idle" || task.steps.length > 0);
-
-      if (task && sessionActive) {
+      if (isSession(task)) {
         if (mode !== "ticker") {
           clear(leftBody);
           leftBody.append(tickerBody);
           mode = "ticker";
           cardKey = "";
         }
-        clear(who);
-        who.append(
-          dot(task.color, 7),
-          h("span", { class: "name", text: task.name }),
-          h("span", { class: "tool", text: task.source === "claudeCode" ? "Claude Code" : "n8n" }),
-        );
-        if (task.steps.length > 1) {
-          who.append(h("span", {
-            class: "count",
-            text: `${Math.min(task.stepIndex + 1, task.steps.length)}/${task.steps.length}`,
-          }));
+        const count = task.steps.length > 1
+          ? `${Math.min(task.stepIndex + 1, task.steps.length)}/${task.steps.length}`
+          : "";
+        const key = [task.id, task.name, task.color, count, task.cwd, task.wslDistro].join("~");
+        if (key !== whoKey) {
+          whoKey = key;
+          clear(who);
+          who.append(
+            dot(task.color, 7),
+            h("span", { class: "name", text: task.name, title: whereTitle(task) }),
+            h("span", { class: "tool", text: "Claude Code" }),
+          );
+          if (count) who.append(h("span", { class: "count", text: count }));
         }
         ticker.sync(task);
       } else if (task) {
+        // An integration's own card, exactly like IntegrationCardView.
         const info = State.integrations[task.id];
         const key = [
           task.id, detailOpen, task.state, task.steps.join("|"),
@@ -213,62 +243,126 @@ function buildOverview(actions: ViewActions): ViewHost {
           clear(leftBody);
           leftBody.append(renderIntegrationCard(task, hooks));
         }
+      } else if (mode !== null) {
+        // Nothing left at all; the island turns this view into `empty`.
+        clear(leftBody);
+        mode = null;
       }
 
-      jump.style.display = detailOpen ? "none" : "";
+      jump.style.display = detailOpen || !task ? "none" : "";
+      others.sync();
+    },
+  };
+}
 
-      const others = State.otherTasks.slice(0, 4);
-      const pillKey = others.map((t) => `${t.id}:${t.pillBadge ?? ""}`).join("|");
-      if (pillKey !== pillIds) {
-        pillIds = pillKey;
-        clear(pills);
-        for (const t of others) pills.append(buildPill(t, actions));
+/**
+ * The right card. On top, the second session: dot, name, ↗ and only its current
+ * step, in the ticker's look. Under a divider, everyone else as a panita — the
+ * user's word for a session's mini Mochi — in its own colour with its name
+ * underneath, sessions first and then any integrations, PANITA_CAP of them and a
+ * "+N". With nobody second, the panitas alone; with nobody at all, a quiet line.
+ * Clicking the second session or a panita puts it on the left card.
+ */
+function buildOthers(actions: ViewActions): { el: HTMLElement; sync(): void } {
+  const secondDot = dot("transparent", 7);
+  const secondName = h("span", { class: "name" });
+  const secondBadge = h("span", { class: "second-badge" });
+  const stepText = h("span", { class: "tick-text shimmer" });
+  const second = h(
+    "div",
+    {
+      class: "second",
+      onclick: () => {
+        const s = State.secondSession;
+        if (s) actions.select(s.id);
+      },
+    },
+    h("div", { class: "second-head" }, secondDot, secondName, secondBadge),
+    h(
+      "div",
+      { class: "second-step" },
+      h("span", { class: "tick-icon" }, svg(ICONS.chevronRight, 9, { stroke: 2.4 })),
+      stepText,
+    ),
+  );
+  const secondJump = h(
+    "button",
+    { class: "icon-btn jump", title: "Open", onclick: () => actions.openSecond() },
+    svg(ICONS.arrowUpRight, 8),
+  );
+  const divider = h("div", { class: "divider" });
+  const row = h("div", { class: "panitas" });
+  const quiet = h("div", { class: "quiet" });
+  const el = h("div", { class: "others" }, second, secondJump, divider, row, quiet);
+
+  let secondKey = "";
+  let rowKey = "";
+  return {
+    el,
+    sync() {
+      const s = State.secondSession;
+      const { shown, more } = State.panitaRow();
+      el.classList.toggle("alone", !s);
+      second.style.display = s ? "" : "none";
+      secondJump.style.display = s ? "" : "none";
+      divider.style.display = s && shown.length > 0 ? "" : "none";
+      row.style.display = shown.length > 0 ? "" : "none";
+      quiet.style.display = !s && shown.length === 0 ? "" : "none";
+      quiet.textContent = State.sessions.length === 0 ? "No Claude Code sessions" : "No other sessions";
+
+      if (s) {
+        const key = [s.id, s.name, s.color, s.pillBadge ?? "", s.cwd, s.wslDistro].join("~");
+        if (key !== secondKey) {
+          secondKey = key;
+          second.dataset.id = s.id;
+          secondDot.style.background = s.color;
+          secondName.textContent = s.name;
+          secondName.title = whereTitle(s) ?? "";
+          clear(secondBadge);
+          if (s.pillBadge) secondBadge.append(badgeEl(s.pillBadge));
+        }
+        const step = s.steps.at(-1) ?? "…";
+        if (stepText.textContent !== step) stepText.textContent = step;
+      }
+
+      const key =
+        shown.map((t) => `${t.id}:${t.name}:${t.color}:${t.pillBadge ?? ""}`).join("|") + `|+${more}`;
+      if (key !== rowKey) {
+        rowKey = key;
+        clear(row);
+        for (const t of shown) row.append(buildPanita(t, actions));
+        if (more > 0) {
+          const hidden = State.panitas.slice(shown.length).map((t) => t.name);
+          row.append(
+            h(
+              "div",
+              { class: "panita more", title: hidden.join(", ") },
+              h("span", { class: "more-disc", text: `+${more}` }),
+            ),
+          );
+        }
         pruneMiniBots();
       }
     },
   };
 }
 
-function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
-  const label = task.id === "integration_claude" ? "VS Code" : task.name;
-  const canvas = createMiniBot(task, 24);
-  const pill = h(
+function buildPanita(task: AgentTask, actions: ViewActions): HTMLElement {
+  const panita = h(
     "div",
-    { class: "pill", onclick: () => actions.setFocus(task.id) },
-    canvas,
-    h("span", { class: "lbl", text: label }),
+    {
+      class: "panita",
+      "data-id": task.id,
+      "data-color": task.color,
+      title: whereTitle(task) ?? task.name,
+      onclick: () => actions.select(task.id),
+    },
+    createMiniBot(task, 20),
+    h("span", { class: "lbl", text: task.name }),
   );
-  pill.style.borderColor = `${task.color}24`;
-  pill.addEventListener("mouseenter", () => {
-    pill.style.background = `${task.color}2e`;
-    pill.style.borderColor = `${task.color}8c`;
-    pill.style.boxShadow = `0 2px 10px ${task.color}59`;
-    (pill.querySelector(".lbl") as HTMLElement).style.color = lighten(task.color, 0.3);
-  });
-  pill.addEventListener("mouseleave", () => {
-    pill.style.background = "";
-    pill.style.borderColor = `${task.color}24`;
-    pill.style.boxShadow = "";
-    (pill.querySelector(".lbl") as HTMLElement).style.color = "";
-  });
-
-  if (task.pillBadge) {
-    const colors = { approval: "#F5A524", finished: "#22C55E", error: "#F4505E" } as const;
-    const icons = { approval: ICONS.bang, finished: ICONS.check, error: ICONS.xmark } as const;
-    const inner = h("i", { style: `background:${colors[task.pillBadge]}` }, svg(icons[task.pillBadge], 6, { stroke: task.pillBadge === "finished" ? 3 : 0 }));
-    const badge = h("div", { class: "pill-badge" }, inner);
-    badge.style.boxShadow = `0 0 4px ${colors[task.pillBadge]}99`;
-    pill.append(badge);
-  }
-  return pill;
-}
-
-function lighten(hex: string, amount: number): string {
-  const v = parseInt(hex.replace("#", ""), 16);
-  const c = [(v >> 16) & 255, (v >> 8) & 255, v & 255].map((x) =>
-    Math.min(255, Math.round(x + amount * 255)),
-  );
-  return `rgb(${c[0]},${c[1]},${c[2]})`;
+  panita.style.setProperty("--c", task.color);
+  if (task.pillBadge) panita.append(badgeEl(task.pillBadge));
+  return panita;
 }
 
 // ── Empty ─────────────────────────────────────────────────────────────────────
@@ -301,7 +395,8 @@ function buildApproval(actions: ViewActions): ViewHost {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, "needs permission"));
+      // The session asking, in its colour — not whichever leads the overview.
+      who.append(agentWho(State.subjectTask, "needs permission"));
       // The whole point of approving here rather than in the terminal: this line
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
@@ -354,7 +449,7 @@ function buildError(actions: ViewActions): ViewHost {
   return {
     el,
     sync() {
-      const task = State.focusTask;
+      const task = State.subjectTask;
       clear(who);
       who.append(agentWho(task, task?.source === "n8n" ? "n8n" : "Claude Code"));
       title.textContent = task?.source === "n8n" ? "Workflow stopped." : "Session stopped on an error.";
@@ -376,9 +471,11 @@ function buildFinished(actions: ViewActions): ViewHost {
   return {
     el,
     sync() {
+      // The session that finished, even if another one leads by now.
+      const task = State.subjectTask;
       clear(who);
-      who.append(agentWho(State.focusTask, "Claude Code finished"));
-      title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
+      who.append(agentWho(task, "Claude Code finished"));
+      title.textContent = task?.steps.at(-1) ?? "Session finished";
     },
   };
 }

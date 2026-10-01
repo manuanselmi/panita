@@ -19,6 +19,7 @@ import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
+import { openPrimary, openSecond, openSubject } from "./open";
 
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
@@ -107,30 +108,14 @@ export class Island {
     const actions: ViewActions = {
       setView: (v) => this.setView(v),
       collapse: () => this.collapse(),
-      setFocus: (id) => {
-        State.setFocus(id);
+      select: (id) => {
+        State.select(id);
         Sound.play("blip");
       },
-      openTerminal: () => {
-        const cwd = State.focusTask?.sessionCwd ?? null;
-        void Bridge.openInVSCode(cwd);
-      },
-      // The ↗ button — same targets as openAgentTarget() on macOS.
-      openTarget: () => {
-        const task = State.focusTask;
-        if (!task) return;
-        const urls: Record<string, string> = {
-          integration_resend: "https://resend.com/emails",
-          integration_vercel: "https://vercel.com/dashboard",
-          integration_github: "https://github.com",
-          integration_stripe: "https://dashboard.stripe.com/payments",
-          integration_notion: "https://notion.so",
-          integration_calcom: "https://app.cal.com/bookings",
-        };
-        if (task.id === "integration_claude") void Bridge.openInVSCode(task.sessionCwd ?? null);
-        else if (task.id === "integration_n8n") void Bridge.openN8n();
-        else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
-      },
+      // Each "Open" opens the session it sits on (open.ts).
+      openTerminal: openSubject,
+      openTarget: openPrimary,
+      openSecond,
       openUrl: (url) => {
         if (url) void Bridge.openUrl(url);
       },
@@ -143,8 +128,11 @@ export class Island {
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
-        State.updateTask("integration_claude", "working");
-        State.setPillBadge("integration_claude", null);
+        req.session.state = "working";
+        req.session.pillBadge = null;
+        // The click is activity on that session: it stays on the left card for
+        // the overview the user lands on, rather than being displaced at once.
+        if (State.sessions.includes(req.session)) State.select(req.session.id);
         this.setView(State.defaultView());
       },
       toggleSound: () => {
@@ -272,6 +260,9 @@ export class Island {
       // it running would keep the frame loop awake — the island must cost
       // nothing while hidden.
       UploadSeq.deactivate();
+      // The session order held still while the pointer was on the open island;
+      // closed, it may catch up.
+      State.reorderSessions();
     }
     this.updateWindowCollapsed();
     this.animateGeometry(modeOrder(mode) < modeOrder(prev));
@@ -586,6 +577,7 @@ export class Island {
       }
     }
     this.wasInIsland = inIsland;
+    State.setPointerOnIsland(inIsland);
 
     // Bot hover → love
     const overBot = State.mode === "expanded" && State.stateOverride == null && this.isBotHit(x, y);
@@ -780,8 +772,9 @@ export class Island {
     const ctx = this.botCanvas.getContext("2d");
     if (!ctx) return;
 
-    const focus = State.focusTask;
-    this.engine.bodyColor = focus?.isIntegration ? hexToRGB(focus.color) : null;
+    // Sessions keep the white Mochi; an integration on the left card lends it its colour.
+    const subject = State.subjectTask;
+    this.engine.bodyColor = subject?.isIntegration ? hexToRGB(subject.color) : null;
     this.engine.particleOverhang = BOT_OVERHANG;
     this.engine.lookX = this.lookX();
     this.engine.lookY = this.lookY();
@@ -826,6 +819,11 @@ export class Island {
   // ── DOM sync ────────────────────────────────────────────────────────────────
 
   private syncDom() {
+    // The home view follows whether there is anything to show: the last session
+    // ending turns the overview into the empty card, the first one arriving turns
+    // it back. Both are the same height, so nothing has to animate.
+    if (State.view === "overview" || State.view === "empty") State.view = State.defaultView();
+
     const expanded = State.mode === "expanded";
     const greetingActive = expanded && State.view === "greeting";
 
@@ -853,23 +851,32 @@ export class Island {
       }
     }
 
-    // Compact mini grid
+    // Compact mini grid: the primary is the Mochi on the left, everyone else —
+    // second session, panitas, then integrations — a mini Mochi in their own
+    // colour here, as in the overview. Four cells; past four, three and a "+N".
     const showGrid = State.mode === "compact";
     this.miniGrid.style.opacity = showGrid ? "1" : "0";
     if (showGrid) {
-      const others = State.otherTasks.slice(0, 4);
-      const key = others.map((t) => t.id).join("|");
+      const second = State.secondSession;
+      const all = second ? [second, ...State.panitas] : State.panitas;
+      const shown = all.length > 4 ? all.slice(0, 3) : all;
+      const more = all.length - shown.length;
+      const key = shown.map((t) => `${t.id}:${t.color}`).join("|") + `|+${more}`;
       if (this.miniGrid.dataset.key !== key) {
         this.miniGrid.dataset.key = key;
         this.miniGrid.replaceChildren();
-        for (const t of others) {
-          this.miniGrid.append(createMiniBot(t, 13));
+        for (const t of shown) {
+          const mini = createMiniBot(t, 13);
+          mini.dataset.id = t.id;
+          mini.dataset.color = t.color;
+          this.miniGrid.append(mini);
         }
+        if (more > 0) this.miniGrid.append(h("span", { class: "mini-more", text: `+${more}` }));
         pruneMiniBots();
       }
     }
 
-    syncMiniBotStates(State.tasks);
+    syncMiniBotStates(State.allTasks);
     this.engine.setState(State.effectiveState);
   }
 

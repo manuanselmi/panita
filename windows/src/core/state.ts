@@ -2,6 +2,9 @@
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
+import {
+  PANITA_CAP, SESSION_DWELL_MS, SESSION_EXPIRY_MS, orderSessions, pickSessionColor, sameOrder,
+} from "./sessions";
 
 export type AgentSource = "claudeCode" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
@@ -24,7 +27,36 @@ export interface AgentTask {
   emote?: BotEmoteName | null;
   miniEye?: EyeShape | null;
   pillBadge?: PillBadge | null;
-  sessionCwd?: string | null;
+}
+
+/** One Claude Code session (see sessions.ts). */
+export interface SessionTask extends AgentTask {
+  kind: "session";
+  /** The payload's `session_id` ("" when the session is keyed by its folder). */
+  sessionId: string;
+  /**
+   * The folder the session was first seen in. Kept, not followed: a `cd` inside
+   * a Bash call would otherwise rename the session and move its "Open".
+   */
+  cwd: string;
+  /** The WSL distribution the session runs in; null for a Windows session. */
+  wslDistro: string | null;
+  /** Last hook event or click — what the order follows. */
+  lastActivity: number;
+  /** Last hook event only — what the expiry follows. A click does not prove the session is alive. */
+  lastEventAt: number;
+}
+
+export const isSession = (t: AgentTask | null | undefined): t is SessionTask =>
+  !!t && (t as SessionTask).kind === "session";
+
+/** What a new hook event says about its session. */
+export interface SessionEvent {
+  key: string;
+  sessionId: string;
+  cwd: string;
+  name: string;
+  wslDistro: string | null;
 }
 
 export interface ApprovalInfo {
@@ -32,6 +64,8 @@ export interface ApprovalInfo {
   sessionId: string;
   tool: string;
   command: string;
+  /** The session asking. Held, not looked up: it may end while its card is up. */
+  session: SessionTask;
 }
 
 export interface ChatMessage {
@@ -62,9 +96,12 @@ const task = (
   id, name, color, state: "idle", stepIndex: 0, steps: [], stepTotal: 0, source, isIntegration: true,
 });
 
-/** AgentTask.integrationAgents — same ids, names and colours as macOS. */
+/**
+ * AgentTask.integrationAgents — same ids, names and colours as macOS, minus the
+ * always-on "VS Code" pill (`integration_claude`): every Claude Code session is
+ * a task of its own now (State.sessions).
+ */
 export const INTEGRATION_AGENTS: AgentTask[] = [
-  task("integration_claude", "VS Code", "#F5F6F8", "claudeCode"),
   task("integration_resend", "Resend", "#22C55E", "n8n"),
   task("integration_n8n", "n8n", "#F29B38", "n8n"),
   task("integration_vercel", "Vercel", "#7C5CFF", "n8n"),
@@ -120,8 +157,22 @@ class AppState {
   mode: IslandMode = "hidden";
   view: IslandViewName = "overview";
 
+  /**
+   * Claude Code sessions in display order: [0] is the primary (left card), [1]
+   * the second (top of the right card), the rest are panitas. Reordered by
+   * reorderSessions() only.
+   */
+  sessions: SessionTask[] = [];
+  /** The opt-in integrations (Settings → Integrations), in their declared order. */
   tasks: AgentTask[] = [];
+  /**
+   * An integration the user clicked to look at. It holds the left card until
+   * another panita is clicked or a session asks for approval; null means the
+   * sessions lead.
+   */
   focusId: string | null = null;
+  /** The session the finished / error card is about. Held for the same reason as ApprovalInfo.session. */
+  alertTask: SessionTask | null = null;
 
   stateOverride: BotStateName | null = null;
 
@@ -129,6 +180,8 @@ class AppState {
   mouse = { x: 0, y: 0 };
   /** Cursor relative to the island's top-left corner. */
   mouseInIsland = { x: 0, y: 0 };
+  /** The cursor is over the island (with the hit margin). */
+  pointerOnIsland = false;
 
   isPinned = false;
   paused = false;
@@ -151,6 +204,9 @@ class AppState {
   settings: Settings = { ...DEFAULT_SETTINGS };
 
   private listeners = new Set<Listener>();
+  private lastReorderAt = Number.NEGATIVE_INFINITY;
+  private reorderTimer: number | null = null;
+  private expiryTimer: number | null = null;
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
@@ -162,35 +218,92 @@ class AppState {
     for (const fn of this.listeners) fn();
   }
 
+  // ── Who goes where ──────────────────────────────────────────────────────────
+
+  /** The left card: an integration the user clicked, else the first session, else the first integration. */
   get focusTask(): AgentTask | null {
-    return this.tasks.find((t) => t.id === this.focusId) ?? this.tasks[0] ?? null;
+    const picked = this.focusId ? this.tasks.find((t) => t.id === this.focusId) : undefined;
+    return picked ?? this.sessions[0] ?? this.tasks[0] ?? null;
+  }
+
+  /** The top of the right card: the first session that is not on the left. */
+  get secondSession(): SessionTask | null {
+    const focus = this.focusTask;
+    return this.sessions.find((s) => s !== focus) ?? null;
+  }
+
+  /**
+   * Everything else, sessions first, then integrations: the panitas under the
+   * divider (PANITA_CAP of them, then "+N") and the compact island's grid.
+   */
+  get panitas(): AgentTask[] {
+    const focus = this.focusTask;
+    const second = this.secondSession;
+    return this.allTasks.filter((t) => t !== focus && t !== second);
+  }
+
+  /** The panitas shown in a row of `cap`, and how many are left for the "+N". */
+  panitaRow(cap = PANITA_CAP): { shown: AgentTask[]; more: number } {
+    const all = this.panitas;
+    const shown = all.slice(0, cap);
+    return { shown, more: all.length - shown.length };
+  }
+
+  /** Sessions and integrations alike: whatever may have a mini Mochi on screen. */
+  get allTasks(): AgentTask[] {
+    return [...this.sessions, ...this.tasks];
+  }
+
+  /**
+   * What the view on screen is about: the asking session on the approval card,
+   * the finished (or failed) one on its card, the left card otherwise. Those
+   * cards name their own session, which need not be the left card's — it may
+   * even have ended while its card is up.
+   */
+  get subjectTask(): AgentTask | null {
+    if (this.view === "approval" && this.pendingApproval) return this.pendingApproval.session;
+    if ((this.view === "finished" || this.view === "error") && this.alertTask) return this.alertTask;
+    return this.focusTask;
   }
 
   get effectiveState(): BotStateName {
-    return this.stateOverride ?? this.focusTask?.state ?? "idle";
+    return this.stateOverride ?? this.subjectTask?.state ?? "idle";
   }
 
-  get otherTasks(): AgentTask[] {
-    return this.tasks.filter((t) => t.id !== this.focusId);
+  findTask(id: string): AgentTask | null {
+    return this.allTasks.find((t) => t.id === id) ?? null;
   }
 
-  setFocus(id: string) {
-    const t = this.tasks.find((x) => x.id === id);
-    if (!t) return;
-    this.focusId = id;
-    t.pillBadge = null;
+  /**
+   * A click on a panita or on the second session: it takes the left card. A
+   * session moves to the front at once — the click counts as activity and skips
+   * the dwell; an integration is held there (focusId) until another click.
+   */
+  select(id: string, now = Date.now()) {
+    const session = this.sessions.find((s) => s.id === id);
+    if (session) {
+      this.focusId = null;
+      session.pillBadge = null;
+      session.lastActivity = now;
+      this.reorderSessions(now, true);
+    } else {
+      const t = this.tasks.find((x) => x.id === id);
+      if (!t) return;
+      this.focusId = id;
+      t.pillBadge = null;
+    }
     this.notify();
   }
 
   updateTask(id: string, state: BotStateName) {
-    const t = this.tasks.find((x) => x.id === id);
+    const t = this.findTask(id);
     if (!t) return;
     t.state = state;
     this.notify();
   }
 
   appendStep(id: string, step: string) {
-    const t = this.tasks.find((x) => x.id === id);
+    const t = this.findTask(id);
     if (!t) return;
     t.steps.push(step);
     if (t.steps.length > 20) t.steps.shift();
@@ -200,34 +313,174 @@ class AppState {
   }
 
   setPillBadge(id: string, badge: PillBadge | null) {
-    const t = this.tasks.find((x) => x.id === id);
+    const t = this.findTask(id);
     if (!t) return;
     t.pillBadge = badge;
     this.notify();
   }
 
-  /** loadIntegrationTasks() — VS Code always on, the rest opt-in (max 4). */
+  // ── Sessions ────────────────────────────────────────────────────────────────
+
+  /**
+   * A hook event from a session: creates the session on its first event, stamps
+   * its activity, and lets the order follow (subject to the dwell).
+   */
+  sessionEvent(ev: SessionEvent, now = Date.now()): SessionTask {
+    this.expireSessions(now);
+    let s = this.sessions.find((x) => x.id === ev.key);
+    if (!s) {
+      s = {
+        kind: "session",
+        id: ev.key,
+        sessionId: ev.sessionId,
+        name: ev.name,
+        cwd: ev.cwd,
+        wslDistro: ev.wslDistro,
+        color: pickSessionColor(ev.name, this.sessions.map((x) => x.color)),
+        state: "idle",
+        stepIndex: 0,
+        steps: [],
+        stepTotal: 0,
+        source: "claudeCode",
+        isIntegration: false,
+        lastActivity: now,
+        lastEventAt: now,
+      };
+      // It joins at the back; reorderSessions brings it forward as soon as the
+      // dwell allows, which is at once unless the order just changed.
+      this.sessions.push(s);
+    } else {
+      if (!s.cwd && ev.cwd) {
+        s.cwd = ev.cwd;
+        s.name = ev.name;
+      }
+      if (ev.wslDistro) s.wslDistro = ev.wslDistro;
+    }
+    s.lastActivity = now;
+    s.lastEventAt = now;
+    this.reorderSessions(now);
+    this.armExpiry(now);
+    return s;
+  }
+
+  /** SessionEnd: the session leaves the island. Its cards, if up, keep their own copy. */
+  removeSession(id: string, now = Date.now()) {
+    const before = this.sessions.length;
+    this.sessions = this.sessions.filter((s) => s.id !== id);
+    if (this.sessions.length === before) return;
+    this.armExpiry(now);
+    this.reorderSessions(now);
+    this.notify();
+  }
+
+  /** Drops every session without a hook event for SESSION_EXPIRY_MS. */
+  expireSessions(now = Date.now()) {
+    const alive = this.sessions.filter((s) => now - s.lastEventAt < SESSION_EXPIRY_MS);
+    if (alive.length === this.sessions.length) return;
+    this.sessions = alive;
+    this.armExpiry(now);
+    this.notify();
+  }
+
+  /**
+   * One timer, set for the next session due to expire, rather than a periodic
+   * sweep: the island must cost nothing while hidden, and this wakes it at most
+   * once per expiring session. Hook events re-arm it.
+   */
+  private armExpiry(now: number) {
+    if (this.expiryTimer != null) window.clearTimeout(this.expiryTimer);
+    this.expiryTimer = null;
+    if (this.sessions.length === 0) return;
+    const due = Math.min(...this.sessions.map((s) => s.lastEventAt)) + SESSION_EXPIRY_MS;
+    this.expiryTimer = window.setTimeout(() => {
+      this.expiryTimer = null;
+      this.expireSessions();
+    }, Math.max(1_000, due - now));
+  }
+
+  /**
+   * Puts the sessions in order: the one waiting on an approval card first, then
+   * the most recent activity first — but no more often than every
+   * SESSION_DWELL_MS (see there for why), and not while the pointer is on the
+   * open island, so a panita never slides away from under a click. A change that
+   * has to wait is retried when the dwell runs out, or when the pointer leaves.
+   * `force` skips both: an approval and a click are the user's business, and
+   * show at once.
+   */
+  reorderSessions(now = Date.now(), force = false) {
+    const desired = orderSessions(this.sessions, this.pendingApproval?.session.id ?? null);
+    const same = sameOrder(desired, this.sessions);
+    if (force) {
+      this.clearReorderTimer();
+      if (!same) {
+        this.sessions = desired;
+        this.notify();
+      }
+      // Restarts the dwell even when nothing moved: a click on the session that
+      // already leads still earns it its two seconds.
+      this.lastReorderAt = now;
+      return;
+    }
+    if (same) {
+      this.clearReorderTimer();
+      return;
+    }
+    const frozen = this.mode === "expanded" && this.pointerOnIsland;
+    const wait = this.lastReorderAt + SESSION_DWELL_MS - now;
+    if (!frozen && wait <= 0) {
+      this.clearReorderTimer();
+      this.sessions = desired;
+      this.lastReorderAt = now;
+      this.notify();
+      return;
+    }
+    if (frozen) {
+      // No timer: setPointerOnIsland(false), or the island closing, retries.
+      this.clearReorderTimer();
+      return;
+    }
+    if (this.reorderTimer == null) {
+      this.reorderTimer = window.setTimeout(() => {
+        this.reorderTimer = null;
+        this.reorderSessions();
+      }, wait);
+    }
+  }
+
+  private clearReorderTimer() {
+    if (this.reorderTimer != null) window.clearTimeout(this.reorderTimer);
+    this.reorderTimer = null;
+  }
+
+  /** From the island's cursor poll. The order may move again once the pointer leaves. */
+  setPointerOnIsland(on: boolean) {
+    if (this.pointerOnIsland === on) return;
+    this.pointerOnIsland = on;
+    if (!on) this.reorderSessions();
+  }
+
+  // ── Integrations ────────────────────────────────────────────────────────────
+
+  /** loadIntegrationTasks() — the opt-in integrations (max 4), in their declared order. */
   loadIntegrationTasks() {
     for (const proto of INTEGRATION_AGENTS) {
-      const shouldLoad =
-        proto.id === "integration_claude" || this.settings.activeIntegrations.includes(proto.id);
+      const shouldLoad = this.settings.activeIntegrations.includes(proto.id);
       const idx = this.tasks.findIndex((t) => t.id === proto.id);
       if (shouldLoad && idx < 0) this.tasks.push({ ...proto, steps: [] });
       if (!shouldLoad && idx >= 0) this.tasks.splice(idx, 1);
     }
-    // Keep the declared order so pills never shuffle.
+    // Keep the declared order so panitas never shuffle.
     const order = INTEGRATION_AGENTS.map((t) => t.id);
     this.tasks.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-    if (!this.focusId) this.focusId = "integration_claude";
+    if (this.focusId && !this.tasks.some((t) => t.id === this.focusId)) this.focusId = null;
     this.notify();
   }
 
   toggleIntegration(id: string) {
-    if (id === "integration_claude") return;
+    if (!TOGGLEABLE_INTEGRATION_IDS.includes(id)) return;
     const active = this.settings.activeIntegrations;
     if (active.includes(id)) {
       this.settings.activeIntegrations = active.filter((x) => x !== id);
-      if (this.focusId === id) this.focusId = "integration_claude";
     } else {
       if (active.length >= 4) return;
       this.settings.activeIntegrations = [...active, id];
@@ -236,7 +489,7 @@ class AppState {
   }
 
   defaultView(): IslandViewName {
-    return this.tasks.length === 0 ? "empty" : "overview";
+    return this.sessions.length === 0 && this.tasks.length === 0 ? "empty" : "overview";
   }
 }
 
