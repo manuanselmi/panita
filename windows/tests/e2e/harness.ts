@@ -265,7 +265,8 @@ function writeSideSettings() {
     soundVolume: 0.12,
     autoCloseInterval: 15,
     absenceInterval: 180,
-    activeIntegrations: ["integration_resend", "integration_n8n", "integration_vercel", "integration_github"],
+    // The shipped default (src/core/state.ts): no integration, only sessions.
+    activeIntegrations: [],
     screen: "primary",
     autostart: false,
     hooksInstalled: false,

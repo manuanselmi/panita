@@ -389,16 +389,12 @@ describe("integrations", () => {
     expect(ids(INTEGRATION_AGENTS)).not.toContain("integration_claude");
   });
 
-  it("match the shipped defaults", () => {
-    expect(DEFAULT_SETTINGS.activeIntegrations).toHaveLength(4);
-    State.settings.activeIntegrations = [...DEFAULT_SETTINGS.activeIntegrations];
-    State.loadIntegrationTasks();
-    expect(ids(State.tasks)).toEqual([
-      "integration_resend",
-      "integration_n8n",
-      "integration_vercel",
-      "integration_github",
-    ]);
+  it("none ships switched on: a fresh island shows sessions only", async () => {
+    expect(DEFAULT_SETTINGS.activeIntegrations).toEqual([]);
+    const fresh = (await freshState()).State;
+    fresh.loadIntegrationTasks();
+    expect(fresh.tasks).toEqual([]);
+    expect(fresh.defaultView()).toBe("empty");
   });
 
   it("come after the sessions, in the same row with the same cap", () => {

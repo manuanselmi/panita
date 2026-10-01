@@ -142,9 +142,13 @@ export const DEFAULT_SETTINGS: Settings = {
   soundVolume: 0.12,
   autoCloseInterval: 15,
   absenceInterval: 180,
-  activeIntegrations: [
-    "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
-  ],
+  // None by default: the island is about Claude Code sessions. Any of them can
+  // still be switched on in Settings → Integrations; they then show as extra
+  // panitas after the sessions. (The upstream default was Resend, n8n, Vercel
+  // and GitHub.) NOTE: on a fresh install with no settings.json, Rust's
+  // Settings::default() (src-tauri/src/settings.rs) is what boot() hands over,
+  // and it still lists those four — it has to change there too.
+  activeIntegrations: [],
   screen: "primary",
   autostart: false,
   hooksInstalled: false,
