@@ -6,7 +6,9 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
 import { State, isSession, type AgentTask, type PillBadge } from "../core/state";
-import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
+import { panitaGrid, washRGBA, type IslandViewName, type Wash } from "../core/layout";
+import { displayName, labelParts } from "../core/sessions";
+import { explanationText } from "../core/explain";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
@@ -15,14 +17,12 @@ import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations
 export interface ViewActions {
   setView(v: IslandViewName): void;
   collapse(): void;
-  /** A panita or the second session was clicked: it takes the left card. */
+  /** A panita was clicked: it takes the left card. */
   select(id: string): void;
   /** "Open terminal" on the finished card: the session that finished. */
   openTerminal(): void;
   /** ↗ on the left card: the session there, or the integration's page. */
   openTarget(): void;
-  /** ↗ on the second session, top of the right card. */
-  openSecond(): void;
   openUrl(url: string): void;
   decide(d: "allow" | "deny"): void;
   toggleSound(): void;
@@ -68,24 +68,48 @@ function btn(
 /** AgentWho — coloured dot + task name + grey label. */
 function agentWho(task: AgentTask | null, label: string): HTMLElement {
   const row = h("div", { class: "who-row" });
-  if (task) {
-    row.append(dot(task.color, 8), h("span", { class: "n", text: task.name, title: whereTitle(task) }));
-  }
-  row.append(h("span", { text: label }));
+  if (task) row.append(dot(task.color, 8), nameEl(task, "n"));
+  row.append(h("span", { class: "who-label", text: label }));
   return row;
 }
 
-/** Tooltip on a session's name: where it runs, so two "api" folders can be told apart. */
+/**
+ * A task's name as every card shows it: "struxto-especificador 2". Two spans,
+ * so that when the name is too long only the name part ends in "…" and the
+ * number that tells same-name sessions apart stays readable.
+ */
+function nameEl(task: AgentTask, cls: string): HTMLElement {
+  const { name, suffix } = labelParts(task);
+  const el = h("span", { class: `${cls} label`, title: taskTooltip(task) });
+  el.append(h("span", { class: "label-name", text: name }));
+  if (suffix) el.append(h("span", { class: "label-nr", text: suffix }));
+  return el;
+}
+
+/** Where a session runs, so two "api" folders can be told apart. */
 function whereTitle(task: AgentTask): string | undefined {
   if (!isSession(task)) return undefined;
   if (!task.cwd) return task.wslDistro ? `WSL · ${task.wslDistro}` : undefined;
   return task.wslDistro ? `${task.cwd} (WSL · ${task.wslDistro})` : task.cwd;
 }
 
+/**
+ * The tooltip on a session's name and panita: its full label, where it runs,
+ * and the first prompt it was given — what tells three sessions of one
+ * project apart.
+ */
+function taskTooltip(task: AgentTask): string {
+  const lines = [displayName(task)];
+  const where = whereTitle(task);
+  if (where) lines.push(where);
+  if (isSession(task) && task.firstPrompt) lines.push(`“${task.firstPrompt}”`);
+  return lines.join("\n");
+}
+
 const BADGE_COLORS: Record<PillBadge, string> = { approval: "#F5A524", finished: "#22C55E", error: "#F4505E" };
 const BADGE_ICONS: Record<PillBadge, string> = { approval: ICONS.bang, finished: ICONS.check, error: ICONS.xmark };
 
-/** The little status disc on a panita (and next to the second session's name). */
+/** The little status disc on a panita. */
 function badgeEl(kind: PillBadge): HTMLElement {
   const color = BADGE_COLORS[kind];
   const inner = h("i", { style: `background:${color}` }, svg(BADGE_ICONS[kind], 6, { stroke: kind === "finished" ? 3 : 0 }));
@@ -142,9 +166,9 @@ export function buildHeader(actions: ViewActions): ViewHost {
 // ── Overview ──────────────────────────────────────────────────────────────────
 //
 // Left card: the primary — a Claude Code session with its ticker, or the card
-// of an integration the user clicked. Right card: the second session and the
-// panitas (buildOthers). Who goes where is State's business (focusTask,
-// secondSession, panitas); this only draws it.
+// of an integration the user clicked. Right card: everyone else as panitas
+// (buildOthers). Who goes where is State's business (focusTask, panitas); this
+// only draws it.
 
 function buildOverview(actions: ViewActions): ViewHost {
   const ticker = new Ticker();
@@ -217,14 +241,15 @@ function buildOverview(actions: ViewActions): ViewHost {
         const count = task.steps.length > 1
           ? `${Math.min(task.stepIndex + 1, task.steps.length)}/${task.steps.length}`
           : "";
-        const key = [task.id, task.name, task.color, count, task.cwd, task.wslDistro].join("~");
+        const key = [task.id, task.name, task.ordinal, task.color, count, task.cwd, task.wslDistro, task.firstPrompt].join("~");
         if (key !== whoKey) {
           whoKey = key;
           clear(who);
           who.append(
             dot(task.color, 7),
-            h("span", { class: "name", text: task.name, title: whereTitle(task) }),
-            h("span", { class: "tool", text: "Claude Code" }),
+            nameEl(task, "name"),
+            // "Claude Code" shows whole or not at all (style.css, .tool-slot).
+            h("span", { class: "tool-slot" }, h("i", { class: "tool-spacer" }), h("span", { class: "tool", text: "Claude Code" })),
           );
           if (count) who.append(h("span", { class: "count", text: count }));
         }
@@ -256,109 +281,79 @@ function buildOverview(actions: ViewActions): ViewHost {
 }
 
 /**
- * The right card. On top, the second session: dot, name, ↗ and only its current
- * step, in the ticker's look. Under a divider, everyone else as a panita — the
- * user's word for a session's mini Mochi — in its own colour with its name
- * underneath, sessions first and then any integrations, PANITA_CAP of them and a
- * "+N". With nobody second, the panitas alone; with nobody at all, a quiet line.
- * Clicking the second session or a panita puts it on the left card.
+ * The right card: everyone but the left card, as panitas — the user's word for
+ * a session's mini Mochi — each in its own colour with its name underneath,
+ * sessions first (most recently active first) and then any integrations. The
+ * grid depends on how many there are (panitaGrid in layout.ts): one centred
+ * row of larger Mochis up to three, then two rows of smaller ones, at most six
+ * slots — past six, the last slot is a "+N". With nobody else, a quiet line.
+ * Clicking a panita puts it on the left card.
  */
 function buildOthers(actions: ViewActions): { el: HTMLElement; sync(): void } {
-  const secondDot = dot("transparent", 7);
-  const secondName = h("span", { class: "name" });
-  const secondBadge = h("span", { class: "second-badge" });
-  const stepText = h("span", { class: "tick-text shimmer" });
-  const second = h(
-    "div",
-    {
-      class: "second",
-      onclick: () => {
-        const s = State.secondSession;
-        if (s) actions.select(s.id);
-      },
-    },
-    h("div", { class: "second-head" }, secondDot, secondName, secondBadge),
-    h(
-      "div",
-      { class: "second-step" },
-      h("span", { class: "tick-icon" }, svg(ICONS.chevronRight, 9, { stroke: 2.4 })),
-      stepText,
-    ),
-  );
-  const secondJump = h(
-    "button",
-    { class: "icon-btn jump", title: "Open", onclick: () => actions.openSecond() },
-    svg(ICONS.arrowUpRight, 8),
-  );
-  const divider = h("div", { class: "divider" });
-  const row = h("div", { class: "panitas" });
+  const grid = h("div", { class: "panitas" });
   const quiet = h("div", { class: "quiet" });
-  const el = h("div", { class: "others" }, second, secondJump, divider, row, quiet);
+  const el = h("div", { class: "others" }, grid, quiet);
 
-  let secondKey = "";
-  let rowKey = "";
+  let gridKey = "";
   return {
     el,
     sync() {
-      const s = State.secondSession;
-      const { shown, more } = State.panitaRow();
-      el.classList.toggle("alone", !s);
-      second.style.display = s ? "" : "none";
-      secondJump.style.display = s ? "" : "none";
-      divider.style.display = s && shown.length > 0 ? "" : "none";
-      row.style.display = shown.length > 0 ? "" : "none";
-      quiet.style.display = !s && shown.length === 0 ? "" : "none";
+      const all = State.panitas;
+      const layout = panitaGrid(all.length);
+      const shown = all.slice(0, layout.shown);
+      grid.style.display = shown.length > 0 ? "" : "none";
+      quiet.style.display = shown.length === 0 ? "" : "none";
       quiet.textContent = State.sessions.length === 0 ? "No Claude Code sessions" : "No other sessions";
 
-      if (s) {
-        const key = [s.id, s.name, s.color, s.pillBadge ?? "", s.cwd, s.wslDistro].join("~");
-        if (key !== secondKey) {
-          secondKey = key;
-          second.dataset.id = s.id;
-          secondDot.style.background = s.color;
-          secondName.textContent = s.name;
-          secondName.title = whereTitle(s) ?? "";
-          clear(secondBadge);
-          if (s.pillBadge) secondBadge.append(badgeEl(s.pillBadge));
-        }
-        const step = s.steps.at(-1) ?? "…";
-        if (stepText.textContent !== step) stepText.textContent = step;
-      }
-
       const key =
-        shown.map((t) => `${t.id}:${t.name}:${t.color}:${t.pillBadge ?? ""}`).join("|") + `|+${more}`;
-      if (key !== rowKey) {
-        rowKey = key;
-        clear(row);
-        for (const t of shown) row.append(buildPanita(t, actions));
-        if (more > 0) {
-          const hidden = State.panitas.slice(shown.length).map((t) => t.name);
-          row.append(
-            h(
-              "div",
-              { class: "panita more", title: hidden.join(", ") },
-              h("span", { class: "more-disc", text: `+${more}` }),
-            ),
-          );
-        }
-        pruneMiniBots();
+        shown
+          .map((t) =>
+            [t.id, t.name, isSession(t) ? t.ordinal : "", t.color, t.pillBadge ?? "", isSession(t) ? (t.firstPrompt ?? "") : ""].join(":"),
+          )
+          .join("|") + `|+${layout.more}`;
+      if (key === gridKey) return;
+      gridKey = key;
+      clear(grid);
+      grid.style.setProperty("--cols", String(layout.cols));
+      grid.dataset.rows = String(layout.rows.length);
+      const slots: HTMLElement[] = shown.map((t) => buildPanita(t, layout.size, actions));
+      if (layout.more > 0) {
+        const hidden = all.slice(layout.shown).map(displayName);
+        slots.push(
+          h(
+            "div",
+            { class: "panita more", title: hidden.join("\n") },
+            h("span", { class: "more-disc", text: `+${layout.more}` }),
+            // Keeps the disc level with the Mochis beside it.
+            h("span", { class: "lbl", text: "más" }),
+          ),
+        );
       }
+      let next = 0;
+      for (const count of layout.rows) {
+        grid.append(h("div", { class: "panita-row" }, ...slots.slice(next, next + count)));
+        next += count;
+      }
+      pruneMiniBots();
     },
   };
 }
 
-function buildPanita(task: AgentTask, actions: ViewActions): HTMLElement {
+function buildPanita(task: AgentTask, size: number, actions: ViewActions): HTMLElement {
+  const label = nameEl(task, "lbl");
+  // The panita carries the tooltip; the label's own would only repeat it.
+  label.removeAttribute("title");
   const panita = h(
     "div",
     {
       class: "panita",
       "data-id": task.id,
       "data-color": task.color,
-      title: whereTitle(task) ?? task.name,
+      title: taskTooltip(task),
       onclick: () => actions.select(task.id),
     },
-    createMiniBot(task, 20),
-    h("span", { class: "lbl", text: task.name }),
+    createMiniBot(task, size),
+    label,
   );
   panita.style.setProperty("--c", task.color);
   if (task.pillBadge) panita.append(badgeEl(task.pillBadge));
@@ -388,9 +383,11 @@ function buildEmpty(actions: ViewActions): ViewHost {
 function buildApproval(actions: ViewActions): ViewHost {
   const who = h("div");
   const code = h("div", { class: "code" });
+  const explain = h("div", { class: "explain" });
   const row = h("div", { class: "actions" });
-  const el = h("div", { class: "view" }, card("amber", stack(116, 16, who, code, row)));
+  const el = h("div", { class: "view approval" }, card("amber", stack(116, 16, who, code, explain, row)));
   let rowKey = "";
+  let explainKey = "";
   return {
     el,
     sync() {
@@ -401,6 +398,26 @@ function buildApproval(actions: ViewActions): ViewHost {
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
       code.textContent = State.pendingApproval?.command || State.pendingApproval?.tool || "…";
+      // Under it, what that does, in Spanish (src/core/explain.ts) — no line at
+      // all for a command nothing in the dictionary knows. A ⚠ up front when any
+      // part is destructive, so it shows even if that part is cut off; those
+      // parts in red. The whole line is in the tooltip.
+      const e = State.pendingApproval?.explanation ?? null;
+      const key = e ? JSON.stringify(e.parts) : "";
+      if (key !== explainKey) {
+        explainKey = key;
+        clear(explain);
+        explain.style.display = e ? "" : "none";
+        explain.classList.toggle("danger", !!e?.danger);
+        explain.title = e ? explanationText(e) : "";
+        if (e) {
+          if (e.danger) explain.append(h("span", { class: "warn", text: "⚠" }));
+          e.parts.forEach((p, i) => {
+            if (i > 0) explain.append(h("span", { class: "sep", text: " → " }));
+            explain.append(h("span", { class: p.danger ? "part danger" : "part", text: p.text }));
+          });
+        }
+      }
       // Two buttons, built once. Rebuilding them between a mouse-down and a
       // mouse-up would swallow the click, and there is nothing left to vary:
       // "Always" is gone until the remembered-rules list exists to back it.

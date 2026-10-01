@@ -19,6 +19,25 @@ export interface ActiveView {
   who: string | null;
   /** The colour of the dot before that name, as #RRGGBB. */
   whoColor: string | null;
+  /** The approval card's explanation line, when it shows one. */
+  explain: string | null;
+  /** Its parts, and which are flagged dangerous (red, with the ⚠ up front). */
+  explainParts: { text: string; danger: boolean }[];
+  explainWarn: boolean;
+}
+
+/**
+ * How a label ("struxto-especificador 2") fits its box: its number must stay
+ * inside it however long the name, and only the name part may be cut.
+ */
+export interface LabelFit {
+  text: string;
+  /** " 2", or "" for the first of a name. */
+  suffix: string;
+  /** The number is drawn, and inside the label and its card. */
+  suffixInside: boolean;
+  /** The name part is cut short (ends in "…" on screen). */
+  truncated: boolean;
 }
 
 /** A session (or integration) as one of the overview's cards shows it. */
@@ -31,16 +50,27 @@ export interface Shown {
 /** The overview's two cards, as a person reads them. */
 export interface Overview {
   /** Left card. */
-  primary: (Shown & { title: string | null; count: string | null }) | null;
-  /** Top of the right card: the second session and its current step. */
-  second: (Shown & { step: string; badge: string | null }) | null;
-  /** The panitas under the divider, left to right. */
-  panitas: (Shown & { id: string; badge: string | null })[];
-  /** The "+N" after them. */
+  primary:
+    | (Shown & {
+        title: string | null;
+        count: string | null;
+        label: LabelFit;
+        /** "Claude Code" after the name: whole or hidden, never cut to "C…". */
+        tool: "whole" | "hidden" | "cut";
+      })
+    | null;
+  /** The right card's panitas, row by row, left to right. */
+  panitas: (Shown & { id: string; badge: string | null; title: string | null; label: LabelFit })[];
+  /** Panitas per row of the grid. */
+  rows: number[];
+  /** The "+N" in the last slot. */
   more: string | null;
   /** The quiet line of an otherwise empty right card. */
   quiet: string | null;
-  /** Both cards lie within the overview (meaningful once the island is open). */
+  /**
+   * Both cards lie within the overview, and every panita within the right
+   * card (meaningful once the island is open).
+   */
   fits: boolean;
 }
 
@@ -49,6 +79,22 @@ export interface Compact {
   minis: { id: string; color: string }[];
   more: string | null;
 }
+
+/** In-page helper: how a `.label` fits (see LabelFit). */
+const LABEL_FIT = `(label) => {
+  const nr = label.querySelector(".label-nr");
+  const name = label.querySelector(".label-name") ?? label;
+  const card = label.closest(".card");
+  const box = label.getBoundingClientRect();
+  const r = nr?.getBoundingClientRect();
+  const c = card?.getBoundingClientRect();
+  return {
+    text: label.textContent ?? "",
+    suffix: nr?.textContent ?? "",
+    suffixInside: !nr || (r.width > 0 && r.right <= box.right + 0.5 && r.left >= box.left - 0.5 && (!c || r.right <= c.right + 0.5)),
+    truncated: name.scrollWidth > name.clientWidth + 0.5,
+  };
+}`;
 
 /** In-page helper: any CSS colour → #RRGGBB, so colours compare as strings. */
 const HEX = `(c) => {
@@ -95,6 +141,8 @@ export class IslandPage {
       if (!el) return null;
       const name = el.querySelector(".who .name, .who-row .n");
       const dot = name?.parentElement?.querySelector(".dot");
+      const explain = el.querySelector(".explain");
+      const shown = explain && getComputedStyle(explain).display !== "none";
       return {
         classes: el.className,
         text: el.textContent ?? "",
@@ -102,6 +150,48 @@ export class IslandPage {
         buttons: [...el.querySelectorAll("button.btn")].map((b) => b.querySelector("span")?.textContent ?? ""),
         who: name?.textContent ?? null,
         whoColor: dot ? hex(getComputedStyle(dot).backgroundColor) : null,
+        explain: shown ? [...explain.querySelectorAll(".part, .sep")].map((p) => p.textContent).join("") : null,
+        explainParts: shown ? [...explain.querySelectorAll(".part")].map((p) => ({ text: p.textContent, danger: p.classList.contains("danger") })) : [],
+        explainWarn: !!(shown && explain.querySelector(".warn")),
+      };
+    })()`);
+  }
+
+  /** How the active view's name labels fit (who row, approval / finished cards). */
+  labels(): Promise<LabelFit[]> {
+    return this.cdp.evaluate<LabelFit[]>(`(() => {
+      const fit = ${LABEL_FIT};
+      return [...document.querySelectorAll("#views > .view.on .label")].map(fit);
+    })()`);
+  }
+
+  /** The approval card's layout: the explanation line sits between the command and the buttons, inside the card. */
+  approvalLayout(): Promise<{
+    inside: boolean;
+    ordered: boolean;
+    explainOverflows: boolean;
+    cardHeight: number;
+    /** Space between the card's top edge and the first row, and between the last row and its bottom edge. */
+    topGap: number;
+    bottomGap: number;
+    rows: { top: number; height: number }[];
+  }> {
+    return this.cdp.evaluate(`(() => {
+      const view = document.querySelector("#views > .view.approval");
+      const card = view.querySelector(".card").getBoundingClientRect();
+      const rows = [".who-row", ".code", ".explain", ".actions"]
+        .map((s) => view.querySelector(s))
+        .filter((el) => el && getComputedStyle(el).display !== "none")
+        .map((el) => el.getBoundingClientRect());
+      const explain = view.querySelector(".explain");
+      return {
+        inside: rows.every((r) => r.top >= card.top - 0.5 && r.bottom <= card.bottom + 0.5 && r.right <= card.right + 0.5),
+        ordered: rows.every((r, i) => i === 0 || r.top >= rows[i - 1].bottom - 0.5),
+        explainOverflows: explain.scrollWidth > explain.clientWidth + 0.5,
+        cardHeight: Math.round(card.height),
+        topGap: Math.round(rows[0].top - card.top),
+        bottomGap: Math.round(card.bottom - rows.at(-1).bottom),
+        rows: rows.map((r) => ({ top: Math.round(r.top - card.top), height: Math.round(r.height) })),
       };
     })()`);
   }
@@ -110,11 +200,11 @@ export class IslandPage {
   overview(): Promise<Overview> {
     return this.cdp.evaluate<Overview>(`(() => {
       const hex = ${HEX};
+      const fit = ${LABEL_FIT};
       const view = document.querySelector("#views > .view.overview");
       const shown = (el) => el && getComputedStyle(el).display !== "none";
       const name = view.querySelector(".who .name");
-      const second = view.querySelector(".others .second");
-      const row = view.querySelector(".others .panitas");
+      const grid = view.querySelector(".others .panitas");
       const quiet = view.querySelector(".others .quiet");
       return {
         primary: name ? {
@@ -122,26 +212,36 @@ export class IslandPage {
           color: hex(getComputedStyle(view.querySelector(".who .dot")).backgroundColor),
           title: name.getAttribute("title"),
           count: view.querySelector(".who .count")?.textContent ?? null,
+          label: fit(name),
+          tool: (() => {
+            const slot = view.querySelector(".who .tool-slot")?.getBoundingClientRect();
+            const tool = view.querySelector(".who .tool")?.getBoundingClientRect();
+            if (!slot || !tool) return "hidden";
+            if (tool.top >= slot.bottom - 0.5 || slot.width < 0.5) return "hidden";
+            return tool.right <= slot.right + 0.5 ? "whole" : "cut";
+          })(),
         } : null,
-        second: shown(second) ? {
-          name: second.querySelector(".name").textContent,
-          color: hex(getComputedStyle(second.querySelector(".dot")).backgroundColor),
-          step: second.querySelector(".tick-text").textContent,
-          badge: second.querySelector(".pill-badge")?.dataset.badge ?? null,
-        } : null,
-        panitas: shown(row) ? [...row.querySelectorAll(".panita:not(.more)")].map((p) => ({
+        panitas: shown(grid) ? [...grid.querySelectorAll(".panita:not(.more)")].map((p) => ({
           id: p.dataset.id,
           name: p.querySelector(".lbl").textContent,
           color: hex(p.dataset.color),
           badge: p.querySelector(".pill-badge")?.dataset.badge ?? null,
+          title: p.getAttribute("title"),
+          label: fit(p.querySelector(".lbl")),
         })) : [],
-        more: shown(row) ? (row.querySelector(".panita.more")?.textContent ?? null) : null,
+        rows: shown(grid) ? [...grid.querySelectorAll(".panita-row")].map((r) => r.children.length) : [],
+        more: shown(grid) ? (grid.querySelector(".panita.more .more-disc")?.textContent ?? null) : null,
         quiet: shown(quiet) ? quiet.textContent : null,
         fits: (() => {
           const box = view.getBoundingClientRect();
-          return [...view.querySelectorAll(".card")]
+          const cardsIn = [...view.querySelectorAll(".card")]
             .map((c) => c.getBoundingClientRect())
             .every((r) => r.left >= box.left - 0.5 && r.right <= box.right + 0.5);
+          const right = view.querySelector(".right .card").getBoundingClientRect();
+          const panitasIn = [...view.querySelectorAll(".others .panita")]
+            .map((p) => p.getBoundingClientRect())
+            .every((r) => r.left >= right.left - 0.5 && r.right <= right.right + 0.5 && r.top >= right.top - 0.5 && r.bottom <= right.bottom + 0.5);
+          return cardsIn && panitasIn;
         })(),
       };
     })()`);
@@ -179,17 +279,18 @@ export class IslandPage {
     if (!clicked) throw new Error(`no panita named "${name}"`);
   }
 
-  /** `element.click()` on the ↗ of the left card or of the second session. */
-  async clickOpen(which: "primary" | "second") {
-    await this.assertOpensIntercepted(`the ${which} card's ↗`);
-    const selector = which === "primary" ? ".view.overview .left .jump" : ".view.overview .others .jump";
+  /** `element.click()` on the left card's ↗ (the right card has none: its panitas are clicked). */
+  async clickOpen() {
+    await this.assertOpensIntercepted("the left card's ↗");
     const clicked = await this.cdp.evaluate<boolean>(`(() => {
-      const button = document.querySelector(${JSON.stringify(selector)});
+      const button = document.querySelector(".view.overview .left .jump");
       if (!button) return false;
       button.click();
       return true;
     })()`);
-    if (!clicked) throw new Error(`no ↗ on the ${which} card`);
+    if (!clicked) throw new Error("no ↗ on the left card");
+    const others = await this.cdp.evaluate<number>(`document.querySelectorAll(".view.overview .right .jump").length`);
+    if (others !== 0) throw new Error("the right card has a ↗ again");
   }
 
   /**

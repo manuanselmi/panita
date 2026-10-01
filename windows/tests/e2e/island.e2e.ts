@@ -5,6 +5,7 @@
 // The tests in the middle block share one running app and run in order; each
 // leaves the island with no approval card pending.
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -39,7 +40,7 @@ import {
   wslPath,
   wslTarget,
 } from "./harness";
-import { IslandPage, SIZES, type Overview } from "./island-page";
+import { IslandPage, SIZES, type ActiveView, type Overview } from "./island-page";
 import { SettingsPage } from "./settings-page";
 
 // The documented PermissionRequest output (https://code.claude.com/docs/en/hooks),
@@ -74,7 +75,10 @@ const base = (extra: Record<string, unknown> = {}) => ({
 const permission = (command: string) =>
   base({ permission_mode: "default", tool_name: "Bash", tool_input: { command, description: "e2e" } });
 
-/** The sessions of the multi-session tests: Windows ones, and one inside WSL. */
+/**
+ * The sessions of the multi-session tests, in the order they start: Windows
+ * ones, one inside WSL, and one with a name too long for its panita.
+ */
 interface E2eSession {
   id: string;
   name: string;
@@ -88,6 +92,9 @@ const S = {
   datasci: { id: "e2e-s4", name: "datasci", cwd: String.raw`C:\e2e\datasci` },
   personal: { id: "e2e-s5", name: "personal", cwd: String.raw`C:\e2e\personal` },
   sexto: { id: "e2e-s6", name: "sexto", cwd: String.raw`C:\e2e\sexto` },
+  front: { id: "e2e-s7", name: "struxto-especificador-front", cwd: String.raw`C:\e2e\struxto-especificador-front` },
+  notas: { id: "e2e-s8", name: "notas", cwd: String.raw`C:\e2e\notas` },
+  web: { id: "e2e-s9", name: "coucou-web", cwd: String.raw`C:\e2e\coucou-web` },
 } satisfies Record<string, E2eSession>;
 
 /** A payload from session `s`, as Claude Code (and, for WSL, the relay) would send it. */
@@ -238,6 +245,9 @@ describe(`side instance "${INSTANCE}"`, () => {
 
     const card = await page.waitForApproval("Bash · rm -rf ./build-e2e");
     expect(card.who).toBe(PROJECT);
+    // Under the command, what it does — flagged.
+    expect(card.explainParts).toEqual([{ text: 'Eliminar "build-e2e" y todo su contenido', danger: true }]);
+    expect(card.explainWarn).toBe(true);
     const [, id] = await waitForLog(/hook PermissionRequest id=(\S+)/, 5_000, from);
     // Expanded to the approval card, and acknowledged to the relay.
     await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
@@ -359,15 +369,29 @@ describe(`side instance "${INSTANCE}"`, () => {
     /** Each session's colour, as first seen: it must never change. */
     const seen = new Map<string, string>();
 
-    /** Records the colours on screen, checks they never change and differ between sessions. */
-    function checkColours(o: Overview) {
-      const shown = [o.primary, o.second, ...o.panitas].filter((x) => x != null);
+    /**
+     * Records the colours on screen, checks they never change, and — up to the
+     * palette's eight live sessions — that no two are alike. (The ninth session
+     * has to share one.)
+     */
+    function checkColours(o: Overview, distinct = true) {
+      const shown = [o.primary, ...o.panitas].filter((x) => x != null);
       for (const { name, color } of shown) {
         if (!seen.has(name)) seen.set(name, color);
         expect(color, `${name}'s colour changed`).toBe(seen.get(name));
       }
+      if (!distinct) return;
       const colours = shown.map((x) => x.color);
       expect(new Set(colours).size, `colours repeat: ${JSON.stringify(shown)}`).toBe(colours.length);
+    }
+
+    /** Every label on the overview keeps its number inside its box, and the cards hold everything. */
+    function checkLayout(o: Overview) {
+      expect(o.fits, "a card or a panita spills out").toBe(true);
+      expect(o.primary?.tool, "“Claude Code” is cut").not.toBe("cut");
+      for (const l of [o.primary?.label, ...o.panitas.map((p) => p.label)]) {
+        if (l) expect(l.suffixInside, `${l.text}'s number is cut`).toBe(true);
+      }
     }
 
     async function work(s: E2eSession, command: string) {
@@ -386,96 +410,105 @@ describe(`side instance "${INSTANCE}"`, () => {
     }
 
     const names = (o: Overview) => o.panitas.map((p) => p.name);
-    /** Longer than the right card is wide, on purpose. */
-    const SEXTO_COMMAND = "cargo test --workspace --all-features -- --nocapture";
+    const ALL = Object.values(S);
 
-    it("two sessions: the newest on the left, the other one on the right", async () => {
+    it("two sessions: the newest on the left, the other one the only panita", async () => {
       await page.pointerAway();
       await page.interceptOpens();
       await work(S.panita, "npm test");
       await work(S.struxto, "pytest -q");
       const o = await page.waitForOverview(
         "struxto on the left, panita on the right",
-        (o) => o.primary?.name === "struxto" && o.second?.name === "panita",
+        (o) => o.primary?.name === "struxto" && names(o).join() === "panita",
       );
-      expect(o.second?.step).toBe("Ejecuta · npm test");
-      expect(o.panitas).toEqual([]);
-      // wsl_distro came through the real relay and stays with the session.
-      expect(o.primary?.title).toBe("/home/e2e/struxto (WSL · Ubuntu-24.04)");
-      checkColours(o);
-      await openIsland();
-      await page.screenshot("10-two-sessions");
-    });
-
-    it("three sessions: the third leads, the first becomes a panita", async () => {
-      await work(S.hekta, "make build");
-      const o = await page.waitForOverview(
-        "hekta, struxto, then the panita",
-        (o) => o.primary?.name === "hekta" && o.second?.name === "struxto" && names(o).join() === "panita",
-      );
+      expect(o.rows).toEqual([1]);
       expect(o.more).toBeNull();
+      // wsl_distro came through the real relay and stays with the session; the
+      // tooltip also says what the session was first asked.
+      expect(o.primary?.title).toBe("struxto\n/home/e2e/struxto (WSL · Ubuntu-24.04)\n“struxto: pytest -q”");
+      expect(o.panitas[0].title).toBe("panita\nC:\\e2e\\panita\n“panita: npm test”");
       checkColours(o);
       await openIsland();
-      await page.screenshot("11-three-sessions");
+      const open = await page.overview();
+      checkLayout(open);
+      expect(open.primary?.tool).toBe("whole");
+      await page.screenshot("10-sessions-2");
     });
 
-    it("six sessions: three panitas and a +1, in order of activity", async () => {
-      await work(S.datasci, "jupyter nbconvert --execute analysis.ipynb");
-      await work(S.personal, "git status");
-      await work(S.sexto, SEXTO_COMMAND);
-      const o = await page.waitForOverview(
-        "sexto, personal, then datasci hekta struxto +1",
-        (o) =>
-          o.primary?.name === "sexto" &&
-          o.second?.name === "personal" &&
-          names(o).join() === "datasci,hekta,struxto" &&
-          o.more === "+1",
-      );
-      checkColours(o);
-      // Six sessions, six colours (panita, behind the +1, was seen earlier).
-      expect(new Set(seen.values()).size).toBe(6);
-      await openIsland();
-      await page.screenshot("12-six-sessions");
+    // One session more each time, up to nine: the right card's grid at every
+    // count from two to eight others, in order of activity.
+    const grids: [count: number, rows: number[], more: string | null][] = [
+      [3, [2], null],
+      [4, [3], null],
+      [5, [2, 2], null],
+      [6, [3, 2], null],
+      [7, [3, 3], null],
+      [8, [3, 3], "+2"],
+      [9, [3, 3], "+3"],
+    ];
+    for (const [count, rows, more] of grids) {
+      it(`${count} sessions: the newest leads, ${count - 1} panitas in rows of ${rows.join(" + ")}${more ? ` with ${more}` : ""}`, async () => {
+        const s = ALL[count - 1];
+        await work(s, `step of ${s.name}`);
+        // Most recent first: the newest on the left, then the others newest first.
+        const expected = ALL.slice(0, count - 1).reverse().map((x) => x.name);
+        const visible = more ? expected.slice(0, 5) : expected;
+        const o = await page.waitForOverview(
+          `${s.name} on the left and ${visible.join(", ")} on the right`,
+          (o) => o.primary?.name === s.name && names(o).join() === visible.join() && o.more === more,
+        );
+        expect(o.rows).toEqual(rows);
+        checkColours(o, count <= 8);
+        await openIsland();
+        checkLayout(await page.overview());
+        await page.screenshot(`1${count - 1}-sessions-${count}`);
+      });
+    }
+
+    it("nine sessions in eight colours: the palette's eight, then the least-worn", () => {
+      expect(seen.size).toBe(9);
+      expect(new Set(seen.values()).size).toBe(8);
+    });
+
+    it("a long name ends in … inside its slot", async () => {
+      const o = await page.overview();
+      const long = o.panitas.find((p) => p.name === S.front.name);
+      expect(long?.label.truncated).toBe(true);
+      checkLayout(o);
     });
 
     it("a click on a panita puts that session on the left at once", async () => {
-      await page.clickPanita("hekta");
+      await page.clickPanita("datasci");
       // Well under the 2 s dwell: a click does not wait for it.
       const o = await page.waitForOverview(
-        "hekta on the left",
-        (o) => o.primary?.name === "hekta" && o.second?.name === "sexto",
+        "datasci on the left",
+        (o) => o.primary?.name === "datasci" && names(o)[0] === S.web.name,
         1_500,
       );
-      expect(names(o)).toEqual(["personal", "datasci", "struxto"]);
-      expect(o.more).toBe("+1");
-      checkColours(o);
-      // sexto's step is a long command: it ends in "…" inside the card rather
-      // than stretching the card past the island (it used to).
-      expect(o.second?.step).toBe(`Ejecuta · ${SEXTO_COMMAND.slice(0, 40)}`);
+      expect(names(o)).toEqual([S.web.name, S.notas.name, S.front.name, S.sexto.name, S.personal.name]);
+      expect(o.more).toBe("+3");
+      checkColours(o, false);
       await openIsland();
-      expect((await page.overview()).fits).toBe(true);
-      await page.screenshot("13-panita-click");
+      checkLayout(await page.overview());
+      await page.screenshot("19-panita-click");
     });
 
-    it("each ↗ opens the session it sits on", async () => {
+    it("↗ opens the session on the left; the panitas have none", async () => {
       const before = (await page.opens()).length;
-      await page.clickOpen("primary");
-      await page.clickOpen("second");
+      await page.clickOpen();
       const opens = (await page.opens()).slice(before);
-      expect(opens).toEqual([
-        { cmd: "open_session", args: { cwd: S.hekta.cwd, wslDistro: null } },
-        { cmd: "open_session", args: { cwd: S.sexto.cwd, wslDistro: null } },
-      ]);
+      expect(opens).toEqual([{ cmd: "open_session", args: { cwd: S.datasci.cwd, wslDistro: null } }]);
     });
 
-    it("the approval card names the session asking; Allow still answers exactly", async () => {
+    it("the approval card names the session asking — even one behind the +N; Allow still answers exactly", async () => {
       const from = readSideLog().length;
-      const hook = runHook("PermissionRequest", askFrom(S.datasci, "rm -rf ./datasci-build"));
-      const card = await page.waitForApproval("Bash · rm -rf ./datasci-build");
-      expect(card.who).toBe("datasci");
-      expect(card.whoColor).toBe(seen.get("datasci"));
+      const hook = runHook("PermissionRequest", askFrom(S.hekta, "rm -rf ./hekta-build"));
+      const card = await page.waitForApproval("Bash · rm -rf ./hekta-build");
+      expect(card.who).toBe("hekta");
+      expect(card.whoColor).toBe(seen.get("hekta"));
+      expect(card.explainParts).toEqual([{ text: 'Eliminar "hekta-build" y todo su contenido', danger: true }]);
       await waitForLog(/hook PermissionRequest id=(\S+)/, 5_000, from);
-      await page.screenshot("14-approval-session");
+      await page.screenshot("1a-approval-session");
 
       await page.click("Allow");
       const run = await hook;
@@ -483,7 +516,7 @@ describe(`side instance "${INSTANCE}"`, () => {
       expect(run).toMatchObject({ code: 0, stderr: "" });
       // The answered session is on the left card of the overview the user lands on.
       await page.waitForView("the card to close", (v) => v.code === null);
-      await page.waitForOverview("datasci on the left", (o) => o.primary?.name === "datasci", 1_500);
+      await page.waitForOverview("hekta on the left", (o) => o.primary?.name === "hekta", 1_500);
     });
 
     it("another session's request while a card is up is declined, and that session badged", async () => {
@@ -501,27 +534,29 @@ describe(`side instance "${INSTANCE}"`, () => {
       const card = await page.activeView();
       expect(card?.code).toBe("Bash · rm -rf ./struxto-cache");
       expect(card?.who).toBe("struxto");
-      await page.screenshot("14b-second-request-declined");
+      await page.screenshot("1b-second-request-declined");
 
       await page.click("Deny");
       expect((await first).stdout).toBe(DENY_JSON);
       await page.waitForView("the card to close", (v) => v.code === null);
-      // Back on the overview: personal asks in its terminal now, and says so.
+      // Back on the overview: personal asks in its terminal now, and its panita says so.
       const o = await page.waitForOverview("personal's badge", (o) =>
-        [o.second, ...o.panitas].some((p) => p?.name === "personal" && p.badge === "approval"),
+        o.panitas.some((p) => p.name === "personal" && p.badge === "approval"),
       );
       expect(o.primary?.name).toBe("struxto");
+      await openIsland();
+      await page.screenshot("1c-badge");
     });
 
     it("Stop opens the finished card naming that session; Open terminal opens it", async () => {
-      // panita is behind the +1 at this point: the card is about it all the same.
+      // panita is behind the +N at this point: the card is about it all the same.
       const run = await runHook("Stop", payloadOf(S.panita, { stop_hook_active: false }));
       expect(run).toMatchObject({ code: 0, stdout: "", stderr: "" });
       const view = await page.waitForView("panita's finished card", (v) => v.text.includes("Claude Code finished"));
       expect(view.who).toBe("panita");
       expect(view.whoColor).toBe(seen.get("panita"));
       expect(view.buttons).toEqual(["Open terminal", "OK"]);
-      await page.screenshot("15-finished-session");
+      await page.screenshot("1d-finished-session");
 
       const before = (await page.opens()).length;
       await page.click("Open terminal");
@@ -532,38 +567,263 @@ describe(`side instance "${INSTANCE}"`, () => {
       await page.click("OK");
       await waitFor("the compact island", async () => (await page.settle()).width === SIZES.compact.width);
       const grid = await page.compact();
-      // Six sessions: the leader is the big Mochi, five others → three minis and a +2.
+      // Nine sessions: the leader is the big Mochi, eight others → three minis and a +5.
       expect(grid.minis).toHaveLength(3);
-      expect(grid.more).toBe("+2");
-      const colourOf = new Map(Object.values(S).map((s) => [`session:${s.id}`, seen.get(s.name)]));
+      expect(grid.more).toBe("+5");
+      const colourOf = new Map(ALL.map((s) => [`session:${s.id}`, seen.get(s.name)]));
       for (const mini of grid.minis) expect(mini.color, mini.id).toBe(colourOf.get(mini.id));
-      await page.screenshot("16-compact");
+      await page.screenshot("1e-compact");
     });
 
     it("SessionEnd takes a session off; the last one alone, then nothing", async () => {
       await openIsland(); // back to the overview from the compact island
-      const order = Object.values(S);
-      for (const [i, s] of order.entries()) {
+      // The ninth first: it shares a colour, and the eight left must not.
+      const ending = [S.web, ...ALL.filter((s) => s !== S.web)];
+      for (const [i, s] of ending.entries()) {
         const run = await runHook("SessionEnd", payloadOf(s, { reason: "exit" }));
         expect(run).toMatchObject({ code: 0, stdout: "", stderr: "" });
-        const left = order.slice(i + 1).map((x) => x.name);
+        const left = ending.slice(i + 1).map((x) => x.name);
         // With nobody left the overview gives way to the empty card (below), and
         // a view off screen is not redrawn.
         if (left.length === 0) break;
         const o = await page.waitForOverview(`${s.name} to be gone`, (o) => {
-          const shown = [o.primary?.name, o.second?.name, ...names(o)].filter(Boolean) as string[];
-          return !shown.includes(s.name) && shown.every((n) => left.includes(n));
+          const shown = [o.primary?.name, ...names(o)].filter(Boolean) as string[];
+          // The left card, and up to six panitas — five and the "+N" past six.
+          const visible = 1 + (left.length - 1 <= 6 ? left.length - 1 : 5);
+          return !shown.includes(s.name) && shown.every((n) => left.includes(n)) && shown.length === visible;
         });
-        if (left.length > 0) checkColours(o);
+        checkColours(o);
         if (left.length === 1) {
           expect(o.primary?.name).toBe(left[0]);
-          expect(o.second).toBeNull();
+          expect(o.panitas).toEqual([]);
           expect(o.quiet).toBe("No other sessions");
           await openIsland();
-          await page.screenshot("17-one-session");
+          await page.screenshot("1f-sessions-1");
         }
       }
       await page.waitForView("the empty card", (v) => v.text.includes("Nothing running right now."));
+    });
+  });
+
+  describe("sessions of the same project", () => {
+    /** Three terminals on one project, as the user runs them: same folder, three session ids. */
+    const CWD_SAME = String.raw`C:\e2e\hekta\struxto-especificador`;
+    const NAME = "struxto-especificador";
+    const same = (n: number): E2eSession => ({ id: `e2e-same-${n}`, name: NAME, cwd: CWD_SAME });
+    const prompts = [
+      "Revisá el endpoint de especificaciones y agregá validación",
+      "Escribí los tests del parser de planos",
+      "Actualizá la documentación del modelo de datos",
+      "Una cuarta sesión para ver el corte",
+    ];
+
+    async function start(n: number) {
+      for (const [event, extra] of [
+        ["UserPromptSubmit", { prompt: prompts[n - 1] }],
+        ["PreToolUse", { tool_name: "Bash", tool_input: { command: `pytest -k parte${n}` } }],
+      ] as const) {
+        const run = await runHook(event, payloadOf(same(n), extra));
+        expect(run).toMatchObject({ code: 0, stdout: "", stderr: "" });
+      }
+    }
+
+    it("three of them are numbered in order of creation; the number never gets cut", async () => {
+      await page.pointerAway();
+      for (const n of [1, 2, 3]) await start(n);
+      const o = await page.waitForOverview(
+        "struxto-especificador 3 on the left",
+        (o) => o.primary?.name === `${NAME} 3` && o.panitas.map((p) => p.name).join() === `${NAME} 2,${NAME}`,
+      );
+      expect(o.primary?.label.suffix).toBe(" 3");
+      // Each panita's tooltip: the full name, the folder, the first prompt.
+      expect(o.panitas.map((p) => p.title)).toEqual([
+        `${NAME} 2\n${CWD_SAME}\n“${prompts[1]}”`,
+        `${NAME}\n${CWD_SAME}\n“${prompts[0]}”`,
+      ]);
+      await page.emit("tray", "open");
+      await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
+      const open = await page.overview();
+      for (const l of [open.primary!.label, ...open.panitas.map((p) => p.label)]) {
+        expect(l.suffixInside, `${l.text}'s number is cut`).toBe(true);
+      }
+      expect(open.fits).toBe(true);
+      // The name and its number take the row; "Claude Code" gives way whole.
+      expect(open.primary?.tool).toBe("hidden");
+      await page.screenshot("20-same-name-3");
+    });
+
+    it("a fourth: three to a row, the names cut, the numbers whole", async () => {
+      await start(4);
+      const o = await page.waitForOverview(
+        "struxto-especificador 4 on the left",
+        (o) => o.primary?.name === `${NAME} 4` && o.panitas.length === 3,
+      );
+      expect(o.panitas.map((p) => p.name)).toEqual([`${NAME} 3`, `${NAME} 2`, NAME]);
+      await page.emit("tray", "open");
+      await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
+      const open = await page.overview();
+      for (const p of open.panitas) {
+        expect(p.label.suffixInside, `${p.name}'s number is cut`).toBe(true);
+        if (p.label.suffix) expect(p.label.truncated, `${p.name} should be cut to fit`).toBe(true);
+      }
+      await page.screenshot("21-same-name-4");
+    });
+
+    it("the approval and finished cards carry the number too", async () => {
+      const hook = runHook("PermissionRequest", askFrom(same(2), "git status"));
+      const card = await page.waitForApproval("Bash · git status");
+      expect(card.who).toBe(`${NAME} 2`);
+      expect((await page.labels()).every((l) => l.suffixInside)).toBe(true);
+      expect(card.explain).toBe("Ver el estado del repo");
+      await page.screenshot("22-same-name-approval");
+      await page.click("Deny");
+      expect((await hook).stdout).toBe(DENY_JSON);
+      await page.waitForView("the card to close", (v) => v.code === null);
+
+      await runHook("Stop", payloadOf(same(2), { stop_hook_active: false }));
+      const done = await page.waitForView("the finished card", (v) => v.text.includes("Claude Code finished"));
+      expect(done.who).toBe(`${NAME} 2`);
+      await page.screenshot("23-same-name-finished");
+      await page.click("OK");
+    });
+
+    it("SessionEnd: the others keep their numbers; a new one takes the free number", async () => {
+      await runHook("SessionEnd", payloadOf(same(1), { reason: "exit" }));
+      await start(5);
+      await page.emit("tray", "open"); // the overview, from the compact island
+      const o = await page.waitForOverview(
+        "the newcomer, bare, on the left",
+        (o) => o.primary?.name === NAME && o.panitas.length === 3,
+      );
+      expect(o.panitas.map((p) => p.name).sort()).toEqual([`${NAME} 2`, `${NAME} 3`, `${NAME} 4`]);
+      for (const n of [2, 3, 4, 5]) await runHook("SessionEnd", payloadOf(same(n), { reason: "exit" }));
+      await page.waitForView("the empty card", (v) => v.text.includes("Nothing running right now."));
+    });
+  });
+
+  describe("the explanation under the command", () => {
+    /**
+     * A real repository for the branch to come from: test-results\e2e\branch-repo\x
+     * on branch `rama-e2e`, next to the session's folder `sub` — so the command
+     * `cd ../x && git commit` commits somewhere the session's folder is not.
+     */
+    const REPO_ROOT = path.join(RESULTS_DIR, "branch-repo");
+    const REPO = path.join(REPO_ROOT, "x");
+    const SUB = path.join(REPO_ROOT, "sub");
+    const asker: E2eSession = { id: "e2e-explain", name: "sub", cwd: SUB };
+    const BRANCH = "rama-e2e";
+
+    beforeAll(() => {
+      fs.rmSync(REPO_ROOT, { recursive: true, force: true });
+      fs.mkdirSync(REPO, { recursive: true });
+      fs.mkdirSync(SUB, { recursive: true });
+      const git = (...args: string[]) => {
+        const r = spawnSync("git", ["-C", REPO, ...args], { encoding: "utf8", windowsHide: true });
+        if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+      };
+      git("init", "-q", "-b", BRANCH);
+      git("-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "commit", "-q", "--allow-empty", "-m", "init");
+    });
+
+    /**
+     * Puts up the approval card for `input`, waits for `accept`, checks the
+     * card's layout, screenshots it, and denies it — denies it even when a
+     * check fails, so one failure does not leave a card up for the next test.
+     */
+    async function ask(
+      tool: string,
+      input: Record<string, unknown>,
+      code: string,
+      accept: (v: ActiveView) => boolean,
+      shot: string,
+      who: E2eSession = asker,
+    ): Promise<ActiveView> {
+      const hook = runHook("PermissionRequest", payloadOf(who, { permission_mode: "default", tool_name: tool, tool_input: input }));
+      await page.waitForApproval(code);
+      try {
+        const card = await page.waitForView(`the explanation for ${code}`, (v) => v.code === code && accept(v));
+        // The approval card is 16 px taller than the others (layout.ts): wait
+        // for the island's spring to get there before measuring.
+        await waitFor("the island at the approval card's size", async () => {
+          const box = await page.settle();
+          return box.width === SIZES.expanded.width && box.height === 176;
+        });
+        // The screenshot also waits out the view's scale-in (style.css, `.view.on`),
+        // so the card is measured at its real size.
+        await page.screenshot(shot);
+        const layout = await page.approvalLayout();
+        expect(layout.inside, "a row of the card spills out").toBe(true);
+        expect(layout.ordered, "rows of the card overlap").toBe(true);
+        expect(layout.cardHeight).toBe(176 - 8 - 34 - 10); // the island less its padding and header
+        // Centred in the card: as much room above the first row as below the last.
+        expect(Math.abs(layout.topGap - layout.bottomGap), JSON.stringify(layout)).toBeLessThanOrEqual(2);
+        return card;
+      } finally {
+        await page.click("Deny");
+        expect((await hook).stdout).toBe(DENY_JSON);
+        await page.waitForView("the card to close", (v) => v.code === null);
+      }
+    }
+
+    it("git push origin main:dev", async () => {
+      const card = await ask("Bash", { command: "git push origin main:dev" }, "Bash · git push origin main:dev",
+        (v) => v.explain !== null, "30-explain-push");
+      expect(card.explainParts).toEqual([{ text: 'Push de "main" a "dev"', danger: false }]);
+      expect(card.explainWarn).toBe(false);
+    });
+
+    it("cd ../x && git commit: the branch of ../x fills in", async () => {
+      const command = 'cd ../x && git commit -m "fix"';
+      const card = await ask("Bash", { command }, `Bash · ${command}`,
+        (v) => v.explain?.includes(BRANCH) ?? false, "31-explain-commit");
+      expect(card.explain).toBe(`Moverse a "x" → Commit en "${BRANCH}": "fix"`);
+    });
+
+    it("a bare git push names the session's own branch", async () => {
+      const inRepo: E2eSession = { id: "e2e-explain-repo", name: "x", cwd: REPO };
+      const card = await ask("Bash", { command: "git push" }, "Bash · git push",
+        (v) => v.explain?.includes(BRANCH) ?? false, "32-explain-bare-push", inRepo);
+      expect(card.explain).toBe(`Push de "${BRANCH}"`);
+      await runHook("SessionEnd", payloadOf(inRepo, { reason: "exit" }));
+    });
+
+    it("rm -rf build is flagged", async () => {
+      const card = await ask("Bash", { command: "rm -rf build" }, "Bash · rm -rf build",
+        (v) => v.explain !== null, "33-explain-rm");
+      expect(card.explainParts).toEqual([{ text: 'Eliminar "build" y todo su contenido', danger: true }]);
+      expect(card.explainWarn).toBe(true);
+    });
+
+    it("an unknown command gets no line at all", async () => {
+      const card = await ask("Bash", { command: "frobnicate --all --really" }, "Bash · frobnicate --all --really",
+        () => true, "34-explain-unknown");
+      expect(card.explain).toBeNull();
+    });
+
+    it("a Write names the file", async () => {
+      const file = String.raw`C:\e2e\src\components\x.ts`;
+      const card = await ask("Write", { file_path: file, content: "export {}" }, `Write · ${file}`,
+        (v) => v.explain !== null, "35-explain-write");
+      expect(card.explain).toBe('Escribir el archivo "x.ts"');
+    });
+
+    it("a long chain ends in … inside the card, its ⚠ still up front", async () => {
+      const command = "cd ../x && npm ci && npm run build && npm test && git add -A && git commit -m wip && rm -rf dist";
+      const card = await ask("Bash", { command }, `Bash · ${command}`,
+        (v) => v.explain !== null, "36-explain-long");
+      expect(card.explainWarn).toBe(true);
+      expect(await page.approvalLayout()).toMatchObject({ inside: true });
+      await runHook("SessionEnd", payloadOf(asker, { reason: "exit" }));
+    });
+
+    it("git_branch answers for a WSL folder too", async (ctx) => {
+      if (!wsl.distro) return ctx.skip(wsl.skip ?? undefined);
+      // The Windows-side test repository, as the distro sees it: read only.
+      const linux = wslPath(wsl.distro, REPO);
+      expect(await page.invoke("git_branch", { cwd: linux, wslDistro: wsl.distro })).toBe(BRANCH);
+      expect(await page.invoke("git_branch", { cwd: "/nonexistent/coucou-e2e", wslDistro: wsl.distro })).toBeNull();
+      expect(await page.invoke("git_branch", { cwd: REPO, wslDistro: null })).toBe(BRANCH);
+      expect(await page.invoke("git_branch", { cwd: "relative", wslDistro: null })).toBeNull();
     });
   });
 

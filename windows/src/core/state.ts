@@ -1,9 +1,10 @@
 // App state — mirror of AppState.swift (the parts the island needs).
 
-import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
+import { PANITA_SLOTS, type BotEmoteName, type BotStateName, type IslandMode, type IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
+import type { Explanation } from "./explain";
 import {
-  PANITA_CAP, SESSION_DWELL_MS, SESSION_EXPIRY_MS, orderSessions, pickSessionColor, sameOrder,
+  SESSION_DWELL_MS, SESSION_EXPIRY_MS, orderSessions, pickOrdinal, pickSessionColor, sameOrder,
 } from "./sessions";
 
 export type AgentSource = "claudeCode" | "n8n";
@@ -45,6 +46,13 @@ export interface SessionTask extends AgentTask {
   lastActivity: number;
   /** Last hook event only — what the expiry follows. A click does not prove the session is alive. */
   lastEventAt: number;
+  /**
+   * Its number among the live sessions of the same name, for its whole life:
+   * 1 is shown bare, 2 and up as "name 2" (see pickOrdinal in sessions.ts).
+   */
+  ordinal: number;
+  /** The first prompt the island saw from it, one line, ~80 characters (its tooltip). */
+  firstPrompt: string | null;
 }
 
 export const isSession = (t: AgentTask | null | undefined): t is SessionTask =>
@@ -66,6 +74,12 @@ export interface ApprovalInfo {
   command: string;
   /** The session asking. Held, not looked up: it may end while its card is up. */
   session: SessionTask;
+  /**
+   * What the command does, in a line of Spanish (src/core/explain.ts), or null
+   * when nothing in it is known. Shown at once; replaced when the git branch it
+   * mentions arrives.
+   */
+  explanation?: Explanation | null;
 }
 
 export interface ChatMessage {
@@ -162,9 +176,8 @@ class AppState {
   view: IslandViewName = "overview";
 
   /**
-   * Claude Code sessions in display order: [0] is the primary (left card), [1]
-   * the second (top of the right card), the rest are panitas. Reordered by
-   * reorderSessions() only.
+   * Claude Code sessions in display order: [0] is the primary (left card), the
+   * rest are panitas on the right card. Reordered by reorderSessions() only.
    */
   sessions: SessionTask[] = [];
   /** The opt-in integrations (Settings → Integrations), in their declared order. */
@@ -230,26 +243,35 @@ class AppState {
     return picked ?? this.sessions[0] ?? this.tasks[0] ?? null;
   }
 
-  /** The top of the right card: the first session that is not on the left. */
+  /**
+   * The first session that is not on the left card. The right card no longer
+   * singles it out — every other session is a panita now — and nothing in this
+   * branch reads it. It stays only for `openSecond` in src/island/open.ts, a
+   * file another branch is changing at the same time; remove both together
+   * once that lands.
+   */
   get secondSession(): SessionTask | null {
     const focus = this.focusTask;
     return this.sessions.find((s) => s !== focus) ?? null;
   }
 
   /**
-   * Everything else, sessions first, then integrations: the panitas under the
-   * divider (PANITA_CAP of them, then "+N") and the compact island's grid.
+   * Everyone but the left card, sessions first (in display order), then
+   * integrations: the right card's panitas and the compact island's grid.
    */
   get panitas(): AgentTask[] {
     const focus = this.focusTask;
-    const second = this.secondSession;
-    return this.allTasks.filter((t) => t !== focus && t !== second);
+    return this.allTasks.filter((t) => t !== focus);
   }
 
-  /** The panitas shown in a row of `cap`, and how many are left for the "+N". */
-  panitaRow(cap = PANITA_CAP): { shown: AgentTask[]; more: number } {
+  /**
+   * The panitas that fit in `slots`, and how many are left for the "+N". The
+   * "+N" takes the last slot, so past `slots` one fewer panita is drawn.
+   */
+  panitaSlots(slots = PANITA_SLOTS): { shown: AgentTask[]; more: number } {
     const all = this.panitas;
-    const shown = all.slice(0, cap);
+    if (all.length <= slots) return { shown: all, more: 0 };
+    const shown = all.slice(0, Math.max(0, slots - 1));
     return { shown, more: all.length - shown.length };
   }
 
@@ -279,9 +301,9 @@ class AppState {
   }
 
   /**
-   * A click on a panita or on the second session: it takes the left card. A
-   * session moves to the front at once — the click counts as activity and skips
-   * the dwell; an integration is held there (focusId) until another click.
+   * A click on a panita: it takes the left card. A session moves to the front
+   * at once — the click counts as activity and skips the dwell; an integration
+   * is held there (focusId) until another click.
    */
   select(id: string, now = Date.now()) {
     const session = this.sessions.find((s) => s.id === id);
@@ -349,14 +371,19 @@ class AppState {
         isIntegration: false,
         lastActivity: now,
         lastEventAt: now,
+        ordinal: pickOrdinal(ev.name, this.sessions),
+        firstPrompt: null,
       };
       // It joins at the back; reorderSessions brings it forward as soon as the
       // dwell allows, which is at once unless the order just changed.
       this.sessions.push(s);
     } else {
       if (!s.cwd && ev.cwd) {
+        // Named after its folder at last: a new name may need a number of its own.
+        const others = this.sessions.filter((x) => x !== s);
         s.cwd = ev.cwd;
         s.name = ev.name;
+        s.ordinal = pickOrdinal(ev.name, others);
       }
       if (ev.wslDistro) s.wslDistro = ev.wslDistro;
     }

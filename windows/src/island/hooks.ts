@@ -5,9 +5,10 @@
 // handled — each Claude Code session as its own task (State.sessions).
 
 import { Bridge, onEvent } from "../core/bridge";
-import { sessionKey } from "../core/sessions";
+import { explainTool, resolveFolder } from "../core/explain";
+import { promptSummary, sessionKey } from "../core/sessions";
 import { Sound } from "../core/sound";
-import { State, type PillBadge, type SessionTask } from "../core/state";
+import { State, type ApprovalInfo, type PillBadge, type SessionTask } from "../core/state";
 import type { IslandViewName } from "../core/layout";
 import type { Island } from "./island";
 
@@ -207,6 +208,9 @@ function handleHook(island: Island, payload: HookPayload) {
       // The field is `prompt`; reading `message` meant this step was always blank.
       const asked = payload.prompt ?? payload.message;
       if (asked) State.appendStep(s.id, asked.slice(0, 60));
+      // What the session was started for: its panita's tooltip, to tell apart
+      // sessions of the same project.
+      if (asked?.trim() && !s.firstPrompt) s.firstPrompt = promptSummary(asked);
       surface("overview", false);
       break;
     }
@@ -295,13 +299,16 @@ function handlePermission(
   if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
   const tool = payload.tool_name ?? "Tool";
   const input = payload.tool_input ?? {};
-  State.pendingApproval = {
+  const request: ApprovalInfo = {
     requestId,
     sessionId: payload.session_id ?? "",
     tool,
     command: approvalTarget(tool, input),
     session: s,
+    // Pure text work, well under a millisecond: the card shows it from the start.
+    explanation: explainTool(tool, input),
   };
+  State.pendingApproval = request;
   // The relay's short ack window closes in 800 ms; everything below this
   // line is synchronous, so the card really is up by the time it lands.
   if (requestId) void Bridge.approvalAck(requestId);
@@ -314,9 +321,50 @@ function handlePermission(
   State.isPinned = true;
   Sound.play("approval");
   island.alert("approval");
+  // The card is up and acknowledged; only now ask git which branch a
+  // "Commit en la rama actual" means.
+  void fillBranches(request, input, event.cwd, event.wslDistro);
 
   // Coucou answers within 108 s or not at all; after that the terminal has
   // taken over and the card would be lying.
+  armApprovalTimeout(island);
+}
+
+/**
+ * Completes an explanation that names "la rama actual": asks the app for the
+ * branch of each folder it mentions — the session's own (the payload's `cwd`,
+ * which follows Claude Code's `cd`s), or one a `cd` in the command moves to —
+ * and redraws the card with the names. Answers that arrive after the card has
+ * gone, or for another card, are dropped; one that never comes, or a folder
+ * that is not a repository, leaves "la rama actual".
+ */
+async function fillBranches(
+  request: ApprovalInfo,
+  input: Record<string, unknown>,
+  cwd: string,
+  wslDistro: string | null,
+) {
+  const dirs = request.explanation?.branchDirs ?? [];
+  if (dirs.length === 0) return;
+  const branches = new Map<string, string>();
+  await Promise.all(
+    dirs.map(async (key) => {
+      const folder = resolveFolder(cwd, key, wslDistro != null);
+      if (!folder) return;
+      try {
+        const branch = await Bridge.gitBranch(folder, wslDistro);
+        if (branch) branches.set(key, branch);
+      } catch {
+        // No branch: the line keeps "la rama actual".
+      }
+    }),
+  );
+  if (branches.size === 0 || State.pendingApproval !== request) return;
+  request.explanation = explainTool(request.tool, input, branches);
+  State.notify();
+}
+
+function armApprovalTimeout(island: Island) {
   pendingTimeout = window.setTimeout(() => {
     pendingTimeout = null;
     const req = State.pendingApproval;

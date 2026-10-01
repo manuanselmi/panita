@@ -2,6 +2,7 @@
 
 mod claude;
 mod files;
+mod git;
 mod hooks;
 // Shared with coucou-hook so both ends of the relay agree on every name.
 #[path = "../../hook/src/instance.rs"]
@@ -488,6 +489,7 @@ pub fn run() {
             approval_decision,
             approval_ack,
             approval_decline,
+            git::git_branch,
             log_line,
             chat_send,
             chat_reset,

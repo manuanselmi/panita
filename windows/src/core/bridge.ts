@@ -97,6 +97,14 @@ export const Bridge = {
   approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
   /** "Nobody can act on this" — Claude Code asks in the terminal right away. */
   approvalDecline: (requestId: string) => call<void>("approval_decline", { requestId }),
+  /**
+   * The git branch checked out in `cwd` — a Windows folder, or a Linux one
+   * inside `wslDistro` — for the approval card's explanation ("Commit en
+   * "dev""). Null when it is not a repository, HEAD is detached, or git does
+   * not answer within a couple of seconds (src-tauri/src/git.rs).
+   */
+  gitBranch: async (cwd: string, wslDistro: string | null): Promise<string | null> =>
+    (await call<string | null>("git_branch", { cwd, wslDistro })) ?? null,
 
   // ── Chat, files, secrets ──────────────────────────────────────────────────
   /** One chat turn. The API key and any file bytes never leave Rust. */
