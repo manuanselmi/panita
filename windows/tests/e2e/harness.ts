@@ -176,7 +176,14 @@ export function toolEnv(): NodeJS.ProcessEnv {
   // The suite must never hand its own instance name to the build, or to anything
   // that is not the side instance itself.
   delete env.COUCOU_INSTANCE;
-  if (fs.existsSync(cargoBin)) env.PATH = `${cargoBin};${env.PATH ?? ""}`;
+  if (fs.existsSync(cargoBin)) {
+    // Windows spells it `Path`, Git Bash and MSYS spell it `PATH`, and a plain
+    // object copy of process.env is case-sensitive: writing `PATH` next to an
+    // existing `Path` hands the child two variables and it may pick the one
+    // holding cargo alone (npm then "is not recognized"). Update whichever exists.
+    const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+    env[key] = `${cargoBin};${env[key] ?? ""}`;
+  }
   return env;
 }
 
