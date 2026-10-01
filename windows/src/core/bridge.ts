@@ -53,6 +53,27 @@ export const Bridge = {
   /** "Open terminal" → opens the folder in VS Code when `code` is on PATH. */
   openInVSCode: (path: string | null) => call<boolean>("open_in_vscode", { path }),
 
+  /**
+   * "Open" on a session: bring that session's terminal to the front, or open
+   * its folder.
+   *
+   * FALLBACK — the wsl-and-focus branch replaces this function with the real
+   * command (focus the session's terminal window, open WSL folders through the
+   * distro). Same signature, so callers do not change. Until then it is
+   * `openInVSCode`: VS Code when `code` is on PATH ("opened"), else Explorer
+   * ("explorer"), and `wslDistro` is not used.
+   */
+  openSession: async (
+    cwd: string | null,
+    wslDistro: string | null,
+  ): Promise<"focused" | "opened" | "explorer" | "failed"> => {
+    void wslDistro;
+    const path = cwd || null;
+    const inCode = await call<boolean>("open_in_vscode", { path });
+    if (inCode) return "opened";
+    return inCode === false && path ? "explorer" : "failed";
+  },
+
   quit: () => call<void>("quit_app"),
 
   openSettingsWindow: () => call<void>("open_settings_window"),
