@@ -660,12 +660,6 @@ describe("Open", () => {
     expect(bridge.Bridge.openSession).toHaveBeenCalledExactlyOnceWith(String.raw`C:\Users\dev\projects\hekta`, null, "h");
   });
 
-  it("↗ on the right card opens the second session", async () => {
-    const { open } = await three();
-    open.openSecond();
-    expect(bridge.Bridge.openSession).toHaveBeenCalledExactlyOnceWith(String.raw`C:\Users\dev\projects\panita`, null, "p");
-  });
-
   it("a WSL session is opened with its distro", async () => {
     const { State, open } = await three();
     State.select(State.sessions.find((s) => s.name === "struxto")!.id);

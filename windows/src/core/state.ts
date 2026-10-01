@@ -244,18 +244,6 @@ class AppState {
   }
 
   /**
-   * The first session that is not on the left card. The right card no longer
-   * singles it out — every other session is a panita now — and nothing in this
-   * branch reads it. It stays only for `openSecond` in src/island/open.ts, a
-   * file another branch is changing at the same time; remove both together
-   * once that lands.
-   */
-  get secondSession(): SessionTask | null {
-    const focus = this.focusTask;
-    return this.sessions.find((s) => s !== focus) ?? null;
-  }
-
-  /**
    * Everyone but the left card, sessions first (in display order), then
    * integrations: the right card's panitas and the compact island's grid.
    */

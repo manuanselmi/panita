@@ -30,8 +30,5 @@ export function openTask(task: AgentTask | null) {
 /** ↗ on the left card. */
 export const openPrimary = () => openTask(State.focusTask);
 
-/** ↗ on the second session, top of the right card. */
-export const openSecond = () => openTask(State.secondSession);
-
 /** "Open terminal" on the finished card: the session that finished, whoever leads now. */
 export const openSubject = () => openTask(State.subjectTask);
