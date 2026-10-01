@@ -85,13 +85,40 @@ anything is written, and the same rule about leaving your own hooks alone.
 The hooks installed in a distro run the same Windows relay through WSL interop,
 by its Linux path (asked of the distro with `wslpath`, so a custom
 `automount.root` is fine), followed by `--wsl-distro "$WSL_DISTRO_NAME"` so the
-island knows the session lives in WSL. Interop has to be enabled in that distro
-(it is by default).
+island knows the session lives in WSL, and `--wsl-ppid "$PPID"` so ↗ can find
+its terminal (below). Interop has to be enabled in that distro (it is by
+default).
+
+A distro whose hooks an older Coucou installed — before `--wsl-ppid` — shows
+**Installed — update available**: **Update…** goes through the same diff, dated
+backup and click. Nothing is rewritten on its own.
 
 Listing the distros reads the registry and starts nothing. A distro that is not
 running is not started just to show its status: its row offers **Check…**, and
 Install / Uninstall start it when you click them. Docker Desktop's and Rancher
 Desktop's own distros are not listed.
+
+### Straight to the session's terminal
+
+The ↗ on a session brings its VS Code window to the front — on whichever
+virtual desktop it is. With the small companion extension installed, it first
+brings forward the exact terminal tab the session runs in, which matters as
+soon as a window has several terminals or several sessions. VS Code has no
+command line for that, hence the extension.
+
+**Settings… → Claude Code → VS Code terminal focus → Install** runs
+`code --install-extension` with the extension packaged inside Coucou — only when
+you click — and the row then shows the installed version. Reload the VS Code
+windows that were already open (Developer: Reload Window).
+
+How it finds the tab: with every hook event the relay sends the PIDs of the
+processes it runs under; the terminal's shell is one of them (inside WSL, the
+distro's own process tree is read when you click). Each VS Code window's
+extension serves a named pipe that only answers "is the terminal with one of
+these shell PIDs mine?", shows it when it is, and names its window so Coucou
+raises the right one. It works for Windows terminals, Remote-WSL windows and
+`wsl` tabs in local windows. Nothing leaves the machine; without the extension,
+or for a session it does not know, ↗ does what it always did.
 
 ## Chat and keys
 
@@ -163,15 +190,18 @@ windows/
     settings/          the settings window
   src-tauri/           Rust backend: window, named pipe, Claude API, pollers
   hook/                coucou-hook.exe, the Claude Code relay
+  vscode-extension/    the companion VS Code extension (terminal focus),
+                       packaged into the app by scripts/build-extension.mjs
   tests/               unit, end-to-end and real-input tests (TESTING.md)
-  scripts/             icon generator
+  scripts/             icon generator, extension packaging, installer copy
 ```
 
 ### Log
 
 `%LOCALAPPDATA%\Coucou\coucou.log` — hook events (tagged `wsl=<distro>` for
-sessions inside WSL), permission decisions, poller problems. It stays on your
-machine.
+sessions inside WSL), permission decisions, what each ↗ did (`terminal "<tab>"
+focused`, `no extension answered`, which window came forward), poller
+problems. It stays on your machine.
 
 ## What's different from the Mac version
 
@@ -179,7 +209,9 @@ machine.
   the top edge instead of hiding in a notch.
 - Permission approval works from **any** terminal; the Mac build only listens to
   VS Code sessions.
-- Not in this version: sending a file by email, dragging Mochi onto a window to
-  attach it as context, and jumping to a specific terminal window — "Open
-  terminal" opens the working folder in VS Code when `code` is on your `PATH`.
+- Jumping to a session's terminal goes through VS Code only (its window, and
+  with the companion extension its exact tab); sessions in other terminals are
+  shown and approved like any other, but ↗ opens their folder in VS Code.
+- Not in this version: sending a file by email, and dragging Mochi onto a
+  window to attach it as context.
 - Cal.com shows the next bookings as a list rather than the Mac's calendar.
