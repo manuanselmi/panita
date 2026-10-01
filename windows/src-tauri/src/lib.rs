@@ -14,6 +14,7 @@ mod secrets;
 mod settings;
 mod tray;
 mod win_user;
+mod wsl;
 
 use std::os::windows::process::CommandExt;
 use std::process::Command;
@@ -26,7 +27,7 @@ use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 
 use claude::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
-use hooks::{HookPreview, HookStatus};
+use hooks::{HookPreview, HookStatus, Target, TargetInfo};
 use island::{PollGate, ScreenInfo};
 use pipe::Pending;
 use settings::Settings;
@@ -189,18 +190,39 @@ fn set_paused(paused: bool) {
 
 // ── Claude Code hooks ─────────────────────────────────────────────────────────
 
+/// Where hooks can go: Windows, then each WSL distro. Registry only — cheap,
+/// and it never starts a distro.
 #[tauri::command]
-fn hooks_status() -> HookStatus {
-    hooks::status()
+fn hooks_targets() -> Vec<TargetInfo> {
+    hooks::targets()
 }
 
-/// A side instance (COUCOU_INSTANCE, see instance.rs) shares
-/// ~/.claude/settings.json with the real install, and every Coucou entry in it
-/// looks the same: installing from here would replace the real install's hooks
-/// with this instance's relay, and uninstalling would remove them. Refused.
+/// Runs blocking work (wsl.exe, files behind \\wsl.localhost) off the main
+/// thread: a synchronous Tauri command runs on the thread that drives every
+/// window, and a WSL distro booting can take seconds.
+async fn off_main_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())
+}
+
+/// `target` is `"windows"` (the default) or `"wsl:<distro>"`. A stopped
+/// distro is only started when `start` is true — see hooks::status_of.
+#[tauri::command]
+async fn hooks_status(target: Option<String>, start: Option<bool>) -> Result<HookStatus, String> {
+    let target = Target::parse(target.as_deref())?;
+    off_main_thread(move || hooks::status_of(&target, start.unwrap_or(false))).await
+}
+
+/// A side instance (COUCOU_INSTANCE, see instance.rs) shares every
+/// ~/.claude/settings.json — Windows and WSL — with the real install, and every
+/// Coucou entry in them looks the same: installing from here would replace the
+/// real install's hooks with this instance's relay, and uninstalling would
+/// remove them. Refused, unless the instance was given a sandbox home
+/// (COUCOU_TEST_HOME, see hooks::test_home), in which case every target's file
+/// lives in that sandbox instead.
 fn refuse_hooks_in_side_instance() -> Result<(), String> {
     let name = match instance::current() {
         Ok(None) => return Ok(()),
+        Ok(Some(_)) if hooks::test_home().is_some() => return Ok(()),
         Ok(Some(name)) => name,
         Err(err) => return Err(err),
     };
@@ -214,30 +236,39 @@ fn refuse_hooks_in_side_instance() -> Result<(), String> {
 
 /// Returns the diff the user has to look at before anything is written.
 #[tauri::command]
-fn hooks_preview(install: bool) -> Result<HookPreview, String> {
+async fn hooks_preview(install: bool, target: Option<String>) -> Result<HookPreview, String> {
     refuse_hooks_in_side_instance()?;
-    hooks::preview(install)
+    let target = Target::parse(target.as_deref())?;
+    off_main_thread(move || hooks::preview(&target, install)).await?
 }
 
 /// Only ever called from an explicit click in the settings window.
 #[tauri::command]
-fn hooks_apply(
+async fn hooks_apply(
     app: AppHandle,
-    shared: State<Shared>,
+    shared: State<'_, Shared>,
     install: bool,
     fingerprint: String,
+    target: Option<String>,
 ) -> Result<String, String> {
     refuse_hooks_in_side_instance()?;
+    let target = Target::parse(target.as_deref())?;
     // The fingerprint comes from the preview the user actually looked at, so a
     // settings.json that changed in between is refused rather than overwritten.
-    let backup = hooks::write(install, &fingerprint)?;
-    let updated = {
-        let mut current = shared.settings.lock().unwrap();
-        current.hooks_installed = install;
-        let _ = settings::save(&current);
-        current.clone()
+    let backup = {
+        let target = target.clone();
+        off_main_thread(move || hooks::write(&target, install, &fingerprint)).await??
     };
-    let _ = app.emit("settings-changed", updated);
+    // `hooksInstalled` (the island's Claude Code dot) is about Windows.
+    if target == Target::Windows {
+        let updated = {
+            let mut current = shared.settings.lock().unwrap();
+            current.hooks_installed = install;
+            let _ = settings::save(&current);
+            current.clone()
+        };
+        let _ = app.emit("settings-changed", updated);
+    }
     Ok(backup)
 }
 
@@ -381,6 +412,10 @@ pub fn show_settings_window(app: &AppHandle) {
     let _ = win.unminimize();
     let _ = win.show();
     let _ = win.set_focus();
+    // The page has been loaded (hidden) since launch. This is its cue to check
+    // things that are not worth checking for a window nobody looks at — the
+    // WSL distros, which cost a wsl.exe each.
+    let _ = app.emit_to("settings", "settings-shown", ());
 }
 
 #[tauri::command]
@@ -435,6 +470,7 @@ pub fn run() {
             open_url,
             open_in_vscode,
             quit_app,
+            hooks_targets,
             hooks_status,
             hooks_preview,
             hooks_apply,
