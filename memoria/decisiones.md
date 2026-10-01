@@ -271,3 +271,48 @@ la suscripción no está permitido en apps de terceros.
 **Decisión.** Claude integra en una rama `integrationN`, resuelve conflictos, corre todas las
 suites desde PowerShell, mira las capturas y deja el comando para que Manuel lo pegue con `!`
 (`checkout main; merge --ff-only <rama>; push origin main`).
+
+## D-015 — La isla se puede arrastrar por el borde de arriba; doble click en el header la achica
+
+**Fecha:** 2026-10-01 · **Estado:** vigente
+
+**Contexto.** Centrada arriba, la isla le tapa a Manuel lo que tiene en esa zona de la
+pantalla. Además, para achicarla había que esperar el cierre automático (15 s): `Esc` casi
+nunca llega, porque la ventana no toma el foco del teclado salvo en el chat (`WS_EX_NOACTIVATE`)
+`[SUPUESTO]`, por lectura del código; no se probó a mano.
+
+**Decisión.** Elegida por Manuel entre dos opciones:
+- **Arrastre libre, solo horizontal**, pegada al borde superior y dentro del mismo monitor, con
+  **imán al centro** (a menos de 24 px del medio vuelve al centro: es la forma de volver sin un
+  botón de reset). La posición se guarda en `settings.json` como `island_x` (fracción del ancho
+  del monitor, para que sobreviva a cambios de resolución, de escala y a la opción "monitor del
+  cursor") y vuelve ahí al reiniciar.
+- Se agarra la isla compacta entera, o la abierta por la franja vacía del header (entre las
+  pestañas y el engranaje). Esa misma franja con **doble click** pliega la isla a compacta.
+
+**Descartada — tres posiciones fijas (izquierda, centro, derecha) con salto a la más cercana.**
+Más prolija, pero la posición fija de la derecha puede tapar otra cosa, que es justo el problema.
+
+**Cómo funciona** (detalle en el código, `src-tauri/src/island.rs`):
+- La isla se ubica por su *ancla*: el centro, en px lógicos desde el borde izquierdo del
+  monitor. La ventana de 720 px se centra en el ancla pero nunca se sale del monitor; cerca de
+  un borde la ventana se frena y la isla se corre adentro de ella (Rust manda ese centro al front
+  con el evento `island-anchor`). Así queda pegada al borde y al abrirse crece hacia el medio.
+- El arrastre lo maneja Rust desde el hilo que ya lee el cursor a 60 Hz, con `GetCursorPos` y
+  `GetAsyncKeyState`: cuando la isla se frena contra un borde el puntero se le sale, la ventana
+  vuelve a ser "click-through" y la página deja de ver el mouse. El front solo avisa el
+  mousedown (`island_press`).
+- Click vs. arrastre: pasar de 4 px lógicos es arrastre. Por eso la compacta ahora **se abre al
+  soltar, no al apretar** (un cambio de sensación casi imperceptible).
+- `island_x` lo escribe **solo** el arrastre: `save_settings` conserva el valor guardado, porque
+  la isla y la ventana de Settings mandan copias completas de los settings que pueden ser
+  anteriores al arrastre y lo pisarían.
+
+**Descartada — una ventana transparente del ancho de todo el monitor**, con la isla movida solo
+por CSS. Más simple de dibujar, pero mientras el botón está apretado sobre la ventana, esta toma
+el mouse (lo necesita el drop de archivos): una franja de 320 px en todo el ancho de arriba
+interferiría con pestañas y barras de título de otras apps.
+
+**Consecuencias.** Se aparta otra vez del diseño original (la isla del Mac vive en el notch y no
+se mueve). El doble click no pliega la isla con una tarjeta de permiso esperando (misma regla que
+`Esc`): plegada, nadie podría contestarla hasta que el relay se rinda.

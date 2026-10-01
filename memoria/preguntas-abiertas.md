@@ -63,6 +63,17 @@ comportamiento de D-009.
 Siempre se vio `set directly`. La cadena de respaldo (`AttachThreadInput` → `FlashWindowEx`)
 existe pero nunca se observó en uso real.
 
+### O6. El test de ancestría del relay falla con `npm test` desde Git Bash
+`procs::tests::the_test_process_has_a_live_ancestry_that_matches_toolhelp` (`hook/src/procs.rs`)
+falló 3 de 3 veces corriendo `npm test` / `npm run test:rust` desde Git Bash el 2026-10-01, y pasó
+siempre desde PowerShell y con `cargo test -p coucou-hook` directo en Git Bash. El mensaje:
+`the parent of 7896 — left: None, right: Some(26380)`: un proceso de la cadena de ancestros ya
+no está en la foto de Toolhelp que el test saca después de recorrerla. `[CONFIRMADO]` que no lo
+causó la rama `island-drag` (no toca `hook/`). `[SUPUESTO]`: algún proceso intermedio de npm o
+de MSYS termina mientras el test corre, y el test asume que todos los ancestros siguen vivos.
+Desbloquea: confiar en las suites corridas desde Git Bash; quizá el test tenga que tolerar un
+ancestro que termina (el recorrido en producción ya corta ahí).
+
 ## 🔵 Del producto
 
 ### N1. ¿Se publica algún día?
