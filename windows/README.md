@@ -165,7 +165,9 @@ already installed on your PC, with its own login — rather than by the API
 `claude` headless in a **hub folder** (by default `Documents\GitHub\hub`), whose
 `CLAUDE.md` tells it about your projects, and lets it read the folders you list
 (by default all of `Documents\GitHub`) and search the web — no commands, no file
-edits, nothing to approve. One process serves the whole chat: it starts with
+edits, nothing to approve, and none of the files that hold secrets or clients'
+data (`.env`, credentials, keys, database dumps, `datos/` folders), which Claude
+Code itself refuses to read. One process serves the whole chat: it starts with
 your first message, answers the next ones in about two seconds, and goes away
 with **+** (a new conversation) or when Coucou quits. Details and the reasons in
 `src-tauri/src/chat_cc.rs`.

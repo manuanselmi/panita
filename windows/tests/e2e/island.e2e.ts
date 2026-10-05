@@ -1503,6 +1503,15 @@ describe(`side instance "${INSTANCE}"`, () => {
       expect(system).toContain("chat box of the user's island");
       expect(system).toContain("PALABRA-E2E");
       expect(system).toContain(CHAT_READABLE);
+      // What it may never read: the deny rules handed over with --settings.
+      // Claude Code enforces them; their spelling was checked against the real
+      // CLI (chat_cc.rs, deny_rules), which the fake cannot do.
+      const settingsFile = valueOf(args, "--settings") ?? "";
+      const denied = (JSON.parse(fs.readFileSync(settingsFile, "utf8")) as { permissions: { deny: string[] } }).permissions.deny;
+      const drive = path.resolve(CHAT_READABLE)[0].toLowerCase();
+      for (const rule of [".env", "*creds*", "*.sql", "datos/**"].map((p) => `Read(//${drive}/**/${p})`)) {
+        expect(denied).toContain(rule);
+      }
       await waitForLog(new RegExp(String.raw`chat: started Claude Code, pid \d+ \(new conversation ${firstSession}\)`), 3_000);
     });
 

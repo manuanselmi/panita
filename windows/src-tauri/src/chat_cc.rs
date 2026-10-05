@@ -29,6 +29,10 @@
 // the user's own ~/.claude/CLAUDE.md and a word on where the answer is shown.
 // Claude Code records that prompt once per conversation: an edited CLAUDE.md
 // takes effect on the next conversation.
+//
+// The chat can read whole folders of repositories, and with them their secrets
+// and their clients' data — and what it reads goes to Anthropic in the
+// conversation. So a `--settings` file denies reading those (`deny_rules`).
 
 use std::collections::hash_map::RandomState;
 use std::ffi::OsString;
@@ -55,6 +59,30 @@ pub const TOOLS: &str = "Read,Glob,Grep,WebSearch,WebFetch";
 /// How much of Claude Code's stderr is kept for an error message.
 const STDERR_TAIL: usize = 2000;
 
+/// What the chat may never read, as gitignore-style patterns: secrets, and
+/// files that hold clients' data (database dumps and files, `datos/` and
+/// `tablas/` folders). Broad on purpose: a `.env.example` blocked costs
+/// nothing; a `.env` read cannot be taken back.
+pub const DENY_PATTERNS: &[&str] = &[
+    "**/.env",
+    "**/.env.*",
+    "**/*creds*",
+    "**/*credential*",
+    "**/*secret*",
+    "**/*cookies*",
+    "**/id_rsa*",
+    "**/*.pem",
+    "**/*.key",
+    "**/*.pfx",
+    "**/*.p12",
+    "**/*.sql",
+    "**/*.db",
+    "**/*.sqlite",
+    "**/*.sqlite3",
+    "**/datos/**",
+    "**/tablas/**",
+];
+
 /// The word on the island that opens the chat's system prompt.
 const ISLAND_NOTE: &str = "You are answering in the chat box of the user's island: a small \
 panel at the top of their screen that shows their Claude Code sessions. The box shows plain \
@@ -74,6 +102,8 @@ pub struct Setup {
     pub model: Option<String>,
     /// Where the system prompt is written before each launch.
     pub system_file: PathBuf,
+    /// Where the deny rules are written before each launch (`--settings`).
+    pub settings_file: PathBuf,
 }
 
 /// The `claude` to run: the first on PATH (`claude.exe` from the native
@@ -119,6 +149,7 @@ pub fn setup_from(settings: &Settings) -> Result<Setup, String> {
         dirs,
         model,
         system_file: crate::settings::local_dir().join("chat").join("system.md"),
+        settings_file: crate::settings::local_dir().join("chat").join("settings.json"),
     })
 }
 
@@ -148,6 +179,8 @@ pub fn args(setup: &Setup, session: &str, resume: bool) -> Vec<OsString> {
     a.push(session.into());
     a.push("--append-system-prompt-file".into());
     a.push(setup.system_file.clone().into_os_string());
+    a.push("--settings".into());
+    a.push(setup.settings_file.clone().into_os_string());
     if !setup.dirs.is_empty() {
         a.push("--add-dir".into());
         a.extend(setup.dirs.iter().map(|d| d.clone().into_os_string()));
@@ -157,6 +190,39 @@ pub fn args(setup: &Setup, session: &str, resume: bool) -> Vec<OsString> {
         a.push(model.into());
     }
     a
+}
+
+/// The `Read(...)` deny rules for every drive the chat can read from.
+///
+/// The spelling is what Claude Code 2.1.287 on Windows actually enforces —
+/// checked 2026-10-05 against decoy files in an `--add-dir` folder: a bare
+/// `**/.env` and an absolute `//C:/Users/…` blocked nothing; `~/**/.env` and
+/// `//c/Users/…` (lower-case drive, no colon) blocked every one. Rooted at
+/// the drive (`//c/**/.env`) they cover any folder the user configures. The
+/// rules on Read also kept Grep from finding what is in those files. A folder
+/// with no drive letter (a `\\wsl.localhost\…` share) gets no rule — see
+/// panita's open question C3.
+pub fn deny_rules<'a>(folders: impl IntoIterator<Item = &'a Path>) -> Vec<String> {
+    let mut drives: Vec<char> = Vec::new();
+    for folder in folders {
+        if let Some(std::path::Component::Prefix(prefix)) = folder.components().next() {
+            if let std::path::Prefix::Disk(d) | std::path::Prefix::VerbatimDisk(d) = prefix.kind() {
+                let d = (d as char).to_ascii_lowercase();
+                if !drives.contains(&d) {
+                    drives.push(d);
+                }
+            }
+        }
+    }
+    drives
+        .iter()
+        .flat_map(|d| DENY_PATTERNS.iter().map(move |p| format!("Read(//{d}/{p})")))
+        .collect()
+}
+
+/// The `--settings` file: nothing but the deny rules.
+pub fn settings_json(rules: &[String]) -> String {
+    serde_json::to_string_pretty(&json!({ "permissions": { "deny": rules } })).unwrap_or_default()
 }
 
 /// The chat's system prompt: the note on the island, the folders it can read,
@@ -492,10 +558,15 @@ fn write_system_file(setup: &Setup) -> Result<(), String> {
     let user_md = std::env::var_os("USERPROFILE")
         .and_then(|home| read(PathBuf::from(home).join(".claude").join("CLAUDE.md")));
     let prompt = system_prompt(&setup.hub, &setup.dirs, hub_md.as_deref(), user_md.as_deref());
-    if let Some(dir) = setup.system_file.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("Could not prepare the chat: {e}"))?;
+    let rules = deny_rules(std::iter::once(setup.hub.as_path()).chain(setup.dirs.iter().map(PathBuf::as_path)));
+    let fail = |e: std::io::Error| format!("Could not prepare the chat: {e}");
+    for file in [&setup.system_file, &setup.settings_file] {
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(fail)?;
+        }
     }
-    std::fs::write(&setup.system_file, prompt).map_err(|e| format!("Could not prepare the chat: {e}"))
+    std::fs::write(&setup.system_file, prompt).map_err(fail)?;
+    std::fs::write(&setup.settings_file, settings_json(&rules)).map_err(fail)
 }
 
 #[cfg(test)]
@@ -509,6 +580,7 @@ mod tests {
             dirs: vec![PathBuf::from(r"C:\GitHub"), PathBuf::from(r"C:\inbox")],
             model: None,
             system_file: PathBuf::from(r"C:\local\chat\system.md"),
+            settings_file: PathBuf::from(r"C:\local\chat\settings.json"),
         }
     }
 
@@ -532,6 +604,7 @@ mod tests {
             "--tools Read,Glob,Grep,WebSearch,WebFetch",
             "--session-id 11111111-2222-4333-8444-555555555555",
             r"--append-system-prompt-file C:\local\chat\system.md",
+            r"--settings C:\local\chat\settings.json",
             r"--add-dir C:\GitHub C:\inbox",
         ] {
             assert!(joined.contains(flag), "missing {flag:?} in {joined}");
@@ -542,6 +615,30 @@ mod tests {
         for never in ["bypassPermissions", "acceptEdits", "--dangerously", "Bash", "Edit", "Write"] {
             assert!(!joined.contains(never), "{never} in {joined}");
         }
+    }
+
+    #[test]
+    fn secrets_and_client_data_are_denied_on_every_drive_it_reads() {
+        let folders = [
+            PathBuf::from(r"C:\Users\m\Documents\GitHub\hub"),
+            PathBuf::from(r"C:\Users\m\Documents\GitHub"),
+            PathBuf::from(r"D:\work"),
+            PathBuf::from(r"\\?\E:\verbatim"),
+            PathBuf::from(r"\\wsl.localhost\Ubuntu-24.04\home\m"),
+        ];
+        let rules = deny_rules(folders.iter().map(PathBuf::as_path));
+        // Lower-case drive, no colon, rooted at the drive: the spelling Claude
+        // Code enforces (see deny_rules).
+        for rule in ["Read(//c/**/.env)", "Read(//c/**/.env.*)", "Read(//c/**/*creds*)", "Read(//c/**/*.sql)", "Read(//c/**/datos/**)", "Read(//d/**/.env)", "Read(//e/**/*.pem)"] {
+            assert!(rules.contains(&rule.to_string()), "missing {rule}");
+        }
+        // One set per drive, C: once although two folders are on it; the WSL
+        // share has no drive and gets none.
+        assert_eq!(rules.len(), 3 * DENY_PATTERNS.len());
+        assert!(rules.iter().all(|r| !r.contains(':') && !r.contains("wsl")));
+        let json: Value = serde_json::from_str(&settings_json(&rules)).unwrap();
+        assert_eq!(json["permissions"]["deny"].as_array().unwrap().len(), rules.len());
+        assert!(deny_rules(std::iter::empty()).is_empty());
     }
 
     #[test]

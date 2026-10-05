@@ -342,8 +342,9 @@ What it does, in order:
      `chat_reset` (not the chat view: opening it gives the island keyboard
      focus): the first message starts it in the suite's hub
      (`test-results\e2e\chat-hub`) with every restricting flag, a fresh
-     `--session-id`, the readable folder and the inbox as `--add-dir`, and a
-     system prompt file holding the hub's CLAUDE.md; a second message is the
+     `--session-id`, the readable folder and the inbox as `--add-dir`, a
+     system prompt file holding the hub's CLAUDE.md, and a `--settings` file
+     denying the reading of secrets and client data on that folder's drive; a second message is the
      same process's next turn; a failed turn is reported and the process lives
      on; a crash ("morite") is reported and the next message starts it again
      with `--resume` on the same session; the chat's "+" (a DOM click) kills it,
@@ -493,6 +494,13 @@ judge looks. These stay manual (or in the opt-in real-input scaffold):
   the chat's own session (its hooks do not run under `--restricted` — checked
   with the real CLI in D-016's spike), and the log's `chat: started Claude
   Code, pid …` and `chat: answered in … ms`.
+- **That the deny rules still hold** (D-017), after every Claude Code update
+  worth worrying about: a readable folder with decoy files — a `.env`, a
+  `*creds*` file, a `.sql`, a `datos\x.csv` and a `README.md`, each with a
+  marker word — and the chat asked to read each one and to Grep for the
+  markers. Only the README's marker may come back. The rules are only as good
+  as Claude Code's reading of their spelling, which is not the documented one
+  on Windows (see `deny_rules` in `chat_cc.rs`).
 - **Dragging the island** along the top edge: a press that travels 4 px turns
   into a drag (a shorter one is still a click that opens the compact island),
   the island stops flush at either edge and opens inwards there, snaps to the

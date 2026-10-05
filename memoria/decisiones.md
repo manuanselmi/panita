@@ -395,6 +395,48 @@ suscripción de Manuel; carpeta hub de juguete con un `CLAUDE.md` con una palabr
 credenciales de la suscripción, no que corra el CLI oficial. Quedan para la implementación las
 preguntas C1–C3 de `preguntas-abiertas.md` (la carpeta hub, el modelo, los proyectos en WSL).
 
+---
+
+## D-017 — El chat no puede leer secretos ni datos de clientes
+
+**Fecha:** 2026-10-05 · **Estado:** vigente
+
+**Contexto.** Con C1 el chat puede leer todo `Documents\GitHub`. El relevamiento de ese día para
+el hub encontró ahí unos 15 `.env`, un archivo de credenciales suelto
+(`Hekta\metaagent\.aerodol_creds`) y datos de clientes: un dump SQL de 60 MB, 2,1 millones de
+transacciones de usuarios de Ahorra Fácil, la base exportada de Aerodol. Lo que el chat lee
+viaja a Anthropic dentro de la conversación. Manuel eligió bloquearlo (también registrado como
+D-003 del hub).
+
+**Decisión.** `chat_cc.rs` escribe un `--settings` con reglas `Read(...)` de denegación para
+secretos (`.env*`, `*creds*`, `*credential*`, `*secret*`, `*cookies*`, `id_rsa*`, `*.pem`,
+`*.key`, `*.pfx`, `*.p12`) y datos (`*.sql`, `*.db`, `*.sqlite*`, carpetas `datos/` y `tablas/`),
+una tanda por cada disco de las carpetas que el chat puede leer. Amplio a propósito: bloquear un
+`.env.example` no cuesta nada; un `.env` leído no se puede deshacer. `--restricted` ignora los
+settings de usuario pero sí aplica los de `--settings`.
+
+**Evidencia — prueba del 2026-10-05** con el `claude` real (2.1.287), archivos señuelo con
+marcadores en una carpeta `--add-dir`, pidiéndole que los lea y que los busque con Grep:
+- `[CONFIRMADO]` **La forma documentada no bloquea nada en Windows:** con `Read(**/.env)` leyó
+  los 7 señuelos. Tampoco `Read(//C:/Users/…/**/.env)`, con la letra y los dos puntos.
+- `[CONFIRMADO]` Bloquean todo `Read(~/**/.env)` (relativo al home) y `Read(//c/Users/…/**/.env)`
+  (letra en minúscula, sin dos puntos). Se usa la segunda, desde la raíz del disco
+  (`//c/**/.env`), que cubre cualquier carpeta configurada y no solo las del home.
+- `[CONFIRMADO]` Con las reglas puestas, Grep tampoco encontró el contenido de esos archivos, y un
+  archivo permitido (`README.md`) se leyó normal.
+
+**Descartada — confiar en que el modelo no los lea.** Pidiéndoselo, los leyó sin dudar.
+
+**Descartada — achicar las carpetas legibles.** Manuel quiere que el chat vea todos sus
+proyectos (C1); el problema son algunos archivos, no las carpetas.
+
+**Consecuencias.** Una carpeta sin letra de disco (un `\\wsl.localhost\…`) no tiene reglas: si
+algún día se agrega una (C3), hay que resolverlo antes. Si una versión nueva de Claude Code
+cambia cómo interpreta los patrones, el bloqueo podría dejar de funcionar sin que nada falle:
+`windows/TESTING.md` deja la prueba con señuelos para repetirla a mano.
+
+---
+
 ## D-018 — Las preguntas de Claude no son permisos; la tarjeta de permiso crece y tiene ↗; un click en el header pliega la isla siempre
 
 **Fecha:** 2026-10-05 · **Estado:** vigente · **Supera a:** D-015 en el plegado (el arrastre
