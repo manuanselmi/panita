@@ -314,6 +314,21 @@ What it does, in order:
      update available" → **Update…** shows the old and the new command in the
      diff → **Back up and write** → every command is the current one, the
      backup holds the old file, the row says "Installed";
+   - **the chat through Claude Code**, against a fake `claude`
+     (`tests/e2e/fake-claude.mjs`, run as `claude.cmd` from the fake-`code`
+     folder, first on the side instance's PATH): first `chat_status` must name
+     the fake — nothing is sent before that, so the real Claude Code and the
+     user's subscription are never touched. Then, through `chat_send` and
+     `chat_reset` (not the chat view: opening it gives the island keyboard
+     focus): the first message starts it in the suite's hub
+     (`test-results\e2e\chat-hub`) with every restricting flag, a fresh
+     `--session-id`, the readable folder and the inbox as `--add-dir`, and a
+     system prompt file holding the hub's CLAUDE.md; a second message is the
+     same process's next turn; a failed turn is reported and the process lives
+     on; a crash ("morite") is reported and the next message starts it again
+     with `--resume` on the same session; the chat's "+" (a DOM click) kills it,
+     and the next message starts a new session, with the dropped file in front
+     of its first message only;
    - no uncaught exception in the island.
 
    Before the hook events, with no position stored, the window is centred on
@@ -350,7 +365,9 @@ What it does, in order:
    force-kills only if that fails, waits for its WebView2 processes, and
    deletes `%LOCALAPPDATA%\Coucou-e2e`, `%APPDATA%\Coucou-e2e` and
    `%LOCALAPPDATA%\fr.louisraille.coucou.e2e`.
-7. **Checks afterwards** that the side instance is gone, that the relay with
+7. **Checks afterwards** that every fake Claude Code the chat started has
+   exited or crashed — the last one when the app quit and its stdin closed —,
+   that the side instance is gone, that the relay with
    nobody listening exits at once with empty stdout, and that the real install
    was not touched: same `coucou.exe` processes (debug builds — side instances,
    possibly another checkout's — aside), same pipe, no new
@@ -450,6 +467,12 @@ judge looks. These stay manual (or in the opt-in real-input scaffold):
   choreography in a browser instead.
 - **The tray menu** (a native menu; the suite sends its `pause` event directly).
 - **Multi-monitor placement** and DPI changes.
+- **The chat with the real Claude Code**: the suite only ever runs the fake.
+  By hand, with a `dev` side instance and a small hub: a first answer, a second
+  one in about two seconds, the hub's CLAUDE.md known, nothing on the island for
+  the chat's own session (its hooks do not run under `--restricted` — checked
+  with the real CLI in D-016's spike), and the log's `chat: started Claude
+  Code, pid …` and `chat: answered in … ms`.
 - **Dragging the island** along the top edge: a press that travels 4 px turns
   into a drag (a shorter one is still a click that opens the compact island),
   the island stops flush at either edge and opens inwards there, snaps to the

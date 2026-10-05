@@ -20,6 +20,14 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T |
   }
 }
 
+/** What the island's chat would run (chat_cc.rs). */
+export interface ChatStatus {
+  engine: string;
+  /** The `claude` it would start, or null when Claude Code is not installed. */
+  exe: string | null;
+  hubExists: boolean;
+}
+
 export interface BootInfo {
   settings: Settings;
   /** Logical screen rect of the monitor the island lives on. */
@@ -51,6 +59,9 @@ export const Bridge = {
    * the island along the top edge, emitting `island-drag` and `island-anchor`.
    */
   islandPress: () => call<void>("island_press"),
+
+  /** What the chat would run: its engine, the `claude` found, whether the hub exists. */
+  chatStatus: () => call<ChatStatus>("chat_status"),
 
   /** Give the window keyboard focus (chat field) and take it away again. */
   focusWindow: (focused: boolean) => call<void>("focus_window", { focused }),

@@ -45,6 +45,12 @@ export const SANDBOX_HOME = path.join(RESULTS_DIR, "sandbox-home");
  */
 export const FAKE_CODE_DIR = path.join(RESULTS_DIR, "fake-code");
 export const FAKE_CODE = path.join(FAKE_CODE_DIR, "code.cmd");
+/**
+ * The fake Claude Code for the chat cases: `claude.cmd`, running
+ * tests/e2e/fake-claude.mjs, in the same folder as the fake `code` — first on
+ * the side instance's PATH, so the island's chat finds it before the real one.
+ */
+export const FAKE_CLAUDE = path.join(FAKE_CODE_DIR, "claude.cmd");
 /** The companion VS Code extension's manifest (vscode-extension/package.json). */
 export const EXTENSION_MANIFEST = JSON.parse(
   fs.readFileSync(path.join(WINDOWS_DIR, "vscode-extension", "package.json"), "utf8"),
@@ -325,6 +331,34 @@ function writeFakeCode() {
   fs.writeFileSync(FAKE_CODE, script);
 }
 
+/** The fake Claude Code next to the fake `code` (see FAKE_CLAUDE). */
+function writeFakeClaude() {
+  fs.copyFileSync(path.join(WINDOWS_DIR, "tests", "e2e", "fake-claude.mjs"), path.join(FAKE_CODE_DIR, "fake-claude.mjs"));
+  fs.writeFileSync(FAKE_CLAUDE, ["@echo off", 'node "%~dp0fake-claude.mjs" %*', ""].join("\r\n"));
+}
+
+/** What the fake Claude Code recorded: each start (args, cwd), message, crash and exit. */
+export interface FakeClaudeEntry {
+  pid: number;
+  event: "start" | "message" | "crash" | "exit";
+  args?: string[];
+  cwd?: string;
+  session?: string | null;
+  text?: string;
+}
+
+export function fakeClaudeCalls(): FakeClaudeEntry[] {
+  try {
+    return fs
+      .readFileSync(path.join(FAKE_CODE_DIR, "claude-calls.jsonl"), "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as FakeClaudeEntry);
+  } catch {
+    return [];
+  }
+}
+
 /** Every call the side instance made to the fake `code`, oldest first. */
 export function fakeCodeCalls(): string[] {
   try {
@@ -397,6 +431,7 @@ export async function launchApp(sid: string, settings: Record<string, unknown> =
   fs.rmSync(SANDBOX_HOME, { recursive: true, force: true });
   fs.mkdirSync(SANDBOX_HOME, { recursive: true });
   writeFakeCode();
+  writeFakeClaude();
 
   const port = await freePort();
   const output = fs.createWriteStream(path.join(RESULTS_DIR, "app-output.log"));

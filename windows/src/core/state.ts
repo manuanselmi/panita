@@ -155,6 +155,18 @@ export interface Settings {
    * back in save_settings is ignored (src-tauri/src/lib.rs).
    */
   islandX?: number | null;
+  /**
+   * Who answers the island's chat: "claude-code" — the `claude` CLI on this PC,
+   * with its own login, restricted and read-only (D-016) — or "api", the
+   * Anthropic API with a key in the Credential Manager.
+   */
+  chatEngine: "claude-code" | "api";
+  /** Claude Code's working folder for the chat: the hub, whose CLAUDE.md describes the projects. */
+  chatHub: string;
+  /** Folders the chat may read besides the hub. */
+  chatDirs: string[];
+  /** `--model` for the Claude Code chat; "" = the account's own. */
+  chatModel: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -173,6 +185,11 @@ export const DEFAULT_SETTINGS: Settings = {
   autostart: false,
   hooksInstalled: false,
   model: "claude-opus-5",
+  chatEngine: "claude-code",
+  // The real folders come from Rust (settings.rs) at boot.
+  chatHub: "",
+  chatDirs: [],
+  chatModel: "",
 };
 
 type Listener = () => void;

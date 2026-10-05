@@ -3,6 +3,7 @@
 // Shared with coucou-hook: the process-tree walk (Windows there, Linux here).
 #[path = "../../hook/src/ancestry.rs"]
 mod ancestry;
+mod chat_cc;
 mod claude;
 mod extension;
 mod files;
@@ -34,6 +35,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 
+use chat_cc::{CcChat, ChatStatus};
 use claude::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
 use hooks::{HookPreview, HookStatus, Target, TargetInfo};
@@ -360,18 +362,33 @@ fn approval_decline(app: AppHandle, request_id: String) {
 /// One chat turn. The API key and any file bytes stay on the Rust side.
 #[tauri::command]
 async fn chat_send(
+    app: AppHandle,
     shared: State<'_, Shared>,
     chat: State<'_, Chat>,
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let model = shared.settings.lock().unwrap().model.clone();
-    claude::send(&chat, &model, query, context).await
+    let settings = shared.settings.lock().unwrap().clone();
+    if settings.chat_engine == "api" {
+        return claude::send(&chat, &settings.model, query, context).await;
+    }
+    // Claude Code (D-016): a blocking exchange with a child process.
+    let setup = chat_cc::setup_from(&settings)?;
+    off_main_thread(move || app.state::<CcChat>().send(&setup, &query, context.as_ref())).await?
 }
 
+/// A new conversation, for whichever engine answers.
 #[tauri::command]
-fn chat_reset(chat: State<Chat>) {
+fn chat_reset(chat: State<Chat>, cc: State<CcChat>) {
     chat.reset();
+    cc.reset();
+}
+
+/// What the chat would run — for Settings, and for the end-to-end suite to
+/// check it talks to its fake `claude` before sending anything.
+#[tauri::command]
+fn chat_status(shared: State<Shared>) -> ChatStatus {
+    chat_cc::status(&shared.settings.lock().unwrap())
 }
 
 /// Copies a dropped file into the inbox and reports its name back.
@@ -524,6 +541,7 @@ pub fn run() {
         .manage(Pending::default())
         .manage(terminal::Terminals::default())
         .manage(Chat::default())
+        .manage(CcChat::default())
         .invoke_handler(tauri::generate_handler![
             boot,
             save_settings,
@@ -549,6 +567,7 @@ pub fn run() {
             log_line,
             chat_send,
             chat_reset,
+            chat_status,
             ingest_file,
             secret_present,
             secret_set,

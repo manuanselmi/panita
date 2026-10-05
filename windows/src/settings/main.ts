@@ -3,7 +3,7 @@
 // integrations land here too in a later stage.
 
 import "./settings.css";
-import { Bridge, onEvent, type ExtensionStatus, type HookStatus, type HookTarget } from "../core/bridge";
+import { Bridge, onEvent, type ChatStatus, type ExtensionStatus, type HookStatus, type HookTarget } from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
 
@@ -363,7 +363,12 @@ function claudeSection(targets: HookTarget[], windows: HookStatus | null, relayP
   };
 }
 
-// ── Claude API section ────────────────────────────────────────────────────────
+// ── Chat section ──────────────────────────────────────────────────────────────
+//
+// Who answers the island's chat. Claude Code (D-016): the `claude` CLI already
+// on this PC, with its own login — the app never sees a credential —, run
+// restricted and read-only in a "hub" folder whose CLAUDE.md describes the
+// user's projects. Or the Anthropic API, with a key in the Credential Manager.
 
 const MODELS: [string, string][] = [
   ["claude-opus-5", "Claude Opus 5"],
@@ -371,10 +376,64 @@ const MODELS: [string, string][] = [
   ["claude-haiku-4-5", "Claude Haiku 4.5"],
 ];
 
-function apiSection(hasKey: boolean): HTMLElement {
-  const dot = statusDot(hasKey);
-  const state = h("span", { class: "hint", text: hasKey ? "Key saved in the Windows Credential Manager." : "No key yet — the chat needs one." });
+/** Claude Code's `--model` aliases; "" leaves it to the account. */
+const CC_MODELS: [string, string][] = [
+  ["", "Your account's default"],
+  ["opus", "Opus"],
+  ["sonnet", "Sonnet"],
+  ["haiku", "Haiku"],
+];
 
+function modelSelect(options: [string, string][], current: string, onChange: (v: string) => void): HTMLSelectElement {
+  const select = h("select", {}) as HTMLSelectElement;
+  for (const [id, label] of options) select.append(h("option", { value: id, text: label }));
+  if (!options.some(([id]) => id === current)) select.append(h("option", { value: current, text: current }));
+  select.value = current;
+  select.addEventListener("change", () => onChange(select.value));
+  return select;
+}
+
+/** A text field saved on change (blur or Enter), like the integration fields. */
+function textField(value: string, placeholder: string, onChange: (v: string) => void): HTMLInputElement {
+  const field = h("input", {
+    type: "text",
+    value,
+    placeholder,
+    style: "flex:1 1 auto;min-width:0",
+    spellcheck: "false",
+  }) as HTMLInputElement;
+  field.addEventListener("change", () => onChange(field.value.trim()));
+  return field;
+}
+
+function chatSection(hasKey: boolean, status: ChatStatus | null): HTMLElement {
+  const dot = statusDot(false);
+
+  // ── Claude Code ──
+  const ccHint = h("span", { class: "hint" });
+  const hubHint = h("span", { class: "hint" });
+  const hub = textField(settings.chatHub, "C:\\Users\\…\\Documents\\GitHub\\hub", (v) => {
+    settings.chatHub = v;
+    void save().then(refreshStatus);
+  });
+  const dirs = textField(settings.chatDirs.join("; "), "C:\\Users\\…\\Documents\\GitHub", (v) => {
+    settings.chatDirs = v.split(";").map((d) => d.trim()).filter(Boolean);
+    void save();
+  });
+  const ccModel = modelSelect(CC_MODELS, settings.chatModel, (v) => {
+    settings.chatModel = v;
+    void save();
+  });
+  const cc = h("div", {},
+    ccHint,
+    h("div", { class: "row" }, h("label", { text: "Hub folder" }), hub),
+    hubHint,
+    h("div", { class: "row" }, h("label", { text: "Can read" }), dirs),
+    h("div", { class: "row" }, h("label", { text: "Model" }), ccModel),
+  );
+
+  // ── API key ──
+  const keyState = h("span", { class: "hint" });
   const field = h("input", {
     type: "password",
     placeholder: hasKey ? "••••••••••••  (stored)" : "sk-ant-...",
@@ -382,19 +441,54 @@ function apiSection(hasKey: boolean): HTMLElement {
     autocomplete: "off",
     spellcheck: "false",
   }) as HTMLInputElement;
-
   const saveBtn = h("button", { class: "primary", text: "Save key" });
   const clearBtn = h("button", { class: "danger", text: "Remove" });
   const feedback = h("div", {});
+  const apiModel = modelSelect(MODELS, settings.model, (v) => {
+    settings.model = v;
+    void save();
+  });
+  const api = h("div", {},
+    keyState,
+    h("div", { class: "row" }, h("label", { text: "API key" }), field, saveBtn, clearBtn),
+    h("div", { class: "row" }, h("label", { text: "Model" }), apiModel),
+    feedback,
+  );
 
-  async function refresh() {
-    const present = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
-    dot.style.background = present ? "#22c55e" : "#f4505e";
-    state.textContent = present
-      ? "Key saved in the Windows Credential Manager."
-      : "No key yet — the chat needs one.";
-    field.placeholder = present ? "••••••••••••  (stored)" : "sk-ant-...";
-    clearBtn.style.display = present ? "" : "none";
+  let keyPresent = hasKey;
+  let current = status;
+
+  function paint() {
+    const onCode = settings.chatEngine !== "api";
+    cc.style.display = onCode ? "" : "none";
+    api.style.display = onCode ? "none" : "";
+
+    const exe = current?.exe ?? null;
+    ccHint.textContent = exe
+      ? `Runs your Claude Code (${exe}) with its own login, read-only: it reads the folders below and searches the web — no commands, no edits, nothing to approve.`
+      : "Claude Code is not installed on this PC (no `claude` on PATH or in ~\\.local\\bin).";
+    const hubOk = current?.hubExists ?? false;
+    hubHint.textContent = hubOk
+      ? "Its CLAUDE.md tells the chat about your projects. Edits apply from the next conversation."
+      : "This folder does not exist yet — create it, with a CLAUDE.md about your projects.";
+    hubHint.style.color = hubOk ? "" : AMBER;
+
+    keyState.textContent = keyPresent ? "Key saved in the Windows Credential Manager." : "No key yet — the chat needs one.";
+    field.placeholder = keyPresent ? "••••••••••••  (stored)" : "sk-ant-...";
+    clearBtn.style.display = keyPresent ? "" : "none";
+
+    const ready = onCode ? Boolean(exe) && hubOk : keyPresent;
+    dot.style.background = ready ? "#22c55e" : "#f4505e";
+  }
+
+  async function refreshStatus() {
+    current = (await Bridge.chatStatus()) ?? current;
+    paint();
+  }
+
+  async function refreshKey() {
+    keyPresent = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
+    paint();
   }
 
   saveBtn.addEventListener("click", async () => {
@@ -405,7 +499,7 @@ function apiSection(hasKey: boolean): HTMLElement {
       await Bridge.secretSet("anthropic-api-key", value);
       field.value = "";
       feedback.append(h("div", { class: "notice ok", text: "Saved. It never touches disk." }));
-      await refresh();
+      await refreshKey();
     } catch (err) {
       feedback.append(h("div", { class: "notice err", text: `Could not save: ${String(err)}` }));
     }
@@ -416,33 +510,30 @@ function apiSection(hasKey: boolean): HTMLElement {
     try {
       await Bridge.secretClear("anthropic-api-key");
       feedback.append(h("div", { class: "notice ok", text: "Key removed." }));
-      await refresh();
+      await refreshKey();
     } catch (err) {
       feedback.append(h("div", { class: "notice err", text: `Could not remove: ${String(err)}` }));
     }
   });
 
-  const model = h("select", {}) as HTMLSelectElement;
-  for (const [id, label] of MODELS) model.append(h("option", { value: id, text: label }));
-  if (!MODELS.some(([id]) => id === settings.model)) {
-    model.append(h("option", { value: settings.model, text: settings.model }));
-  }
-  model.value = settings.model;
-  model.addEventListener("change", () => {
-    settings.model = model.value;
-    void save();
-  });
+  const engine = modelSelect(
+    [["claude-code", "Claude Code (your subscription)"], ["api", "Anthropic API key"]],
+    settings.chatEngine,
+    (v) => {
+      settings.chatEngine = v === "api" ? "api" : "claude-code";
+      void save();
+      paint();
+    },
+  );
 
-  clearBtn.style.display = hasKey ? "" : "none";
-
+  paint();
   return h(
     "section",
     {},
-    h("h2", {}, dot, h("span", { text: "Claude" })),
-    state,
-    h("div", { class: "row" }, h("label", { text: "API key" }), field, saveBtn, clearBtn),
-    h("div", { class: "row" }, h("label", { text: "Model" }), model),
-    feedback,
+    h("h2", {}, dot, h("span", { text: "Chat" })),
+    h("div", { class: "row" }, h("label", { text: "Answered by" }), engine),
+    cc,
+    api,
   );
 }
 
@@ -623,6 +714,7 @@ async function main() {
   const claude = claudeSection(targets, windows, windows?.hookPath ?? boot?.hookPath ?? "");
 
   const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
+  const chatStatus = await Bridge.chatStatus();
 
   const keys = [
     "stripe-api-key", "github-token", "vercel-token",
@@ -635,7 +727,7 @@ async function main() {
   root.append(
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
     claude.el,
-    apiSection(hasKey),
+    chatSection(hasKey, chatStatus),
     integrationsSection(present),
     generalSection(),
     h("div", {

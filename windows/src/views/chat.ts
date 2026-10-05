@@ -46,7 +46,10 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     spellcheck: "false",
   }) as HTMLInputElement;
   const send = h("button", { class: "send-btn", title: "Send" }, svg(ICONS.arrowUp, 11));
-  const bar = h("div", { class: "chat-bar" }, input, send);
+  // A new conversation: Claude Code starts over with a fresh session (and the
+  // API engine with an empty history). The file the chat was about goes too.
+  const fresh = h("button", { class: "new-chat-btn", title: "New conversation" }, svg(ICONS.plus, 11));
+  const bar = h("div", { class: "chat-bar" }, fresh, input, send);
 
   const el = h(
     "div",
@@ -92,6 +95,18 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     }
   }
 
+  fresh.addEventListener("click", () => {
+    if (sending) return;
+    State.chatHistory = [];
+    State.droppedFile = null;
+    State.promptContext = null;
+    void Bridge.chatReset();
+    Sound.play("blip");
+    State.notify();
+    onHeightChange();
+    input.focus();
+  });
+
   send.addEventListener("click", () => void submit());
   input.addEventListener("keydown", (e) => {
     if ((e as KeyboardEvent).key === "Enter") {
@@ -124,6 +139,8 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
       input.placeholder = State.chatHistory.length === 0 ? "Ask me anything…" : "Continue…";
       input.disabled = sending;
+      (fresh as HTMLButtonElement).disabled = sending;
+      fresh.style.visibility = State.chatHistory.length > 0 ? "visible" : "hidden";
     },
     focus() {
       input.focus();

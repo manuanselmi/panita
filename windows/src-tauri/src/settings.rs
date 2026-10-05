@@ -28,10 +28,45 @@ pub struct Settings {
     /// window holding an older copy of the settings can never move the island.
     #[serde(default)]
     pub island_x: Option<f64>,
+    /// Who answers the island's chat: "claude-code" — the `claude` CLI on this
+    /// PC, with its own login (chat_cc.rs, D-016) — or "api", the Anthropic API
+    /// with the key in the Credential Manager (claude.rs).
+    #[serde(default = "default_chat_engine")]
+    pub chat_engine: String,
+    /// Claude Code's working folder for the chat: the "hub", whose CLAUDE.md
+    /// describes the user's projects.
+    #[serde(default = "default_chat_hub")]
+    pub chat_hub: String,
+    /// Folders the chat may read besides the hub (`--add-dir`).
+    #[serde(default = "default_chat_dirs")]
+    pub chat_dirs: Vec<String>,
+    /// `--model` for the Claude Code chat; empty = whatever the account uses.
+    #[serde(default)]
+    pub chat_model: String,
 }
 
 fn default_model() -> String {
     crate::claude::DEFAULT_MODEL.to_string()
+}
+
+fn default_chat_engine() -> String {
+    "claude-code".into()
+}
+
+/// `%USERPROFILE%\Documents\GitHub`, where the user's repositories live.
+fn github_dir() -> PathBuf {
+    let home = std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join("Documents").join("GitHub")
+}
+
+fn default_chat_hub() -> String {
+    github_dir().join("hub").to_string_lossy().into_owned()
+}
+
+fn default_chat_dirs() -> Vec<String> {
+    vec![github_dir().to_string_lossy().into_owned()]
 }
 
 impl Default for Settings {
@@ -50,6 +85,10 @@ impl Default for Settings {
             hooks_installed: false,
             model: default_model(),
             island_x: None,
+            chat_engine: default_chat_engine(),
+            chat_hub: default_chat_hub(),
+            chat_dirs: default_chat_dirs(),
+            chat_model: String::new(),
         }
     }
 }

@@ -144,9 +144,21 @@ or for a session it does not know, ↗ does what it always did.
 
 ## Chat and keys
 
-**Settings… → Claude** takes your Anthropic API key. Keys live in the **Windows
-Credential Manager**, never on disk and never in the interface — the island can
-only ask whether a key exists. Same for every integration key.
+In this fork the island's chat is answered by **Claude Code** — the `claude`
+already installed on your PC, with its own login — rather than by the API
+(**Settings… → Chat → Answered by**). Coucou never sees a credential: it starts
+`claude` headless in a **hub folder** (by default `Documents\GitHub\hub`), whose
+`CLAUDE.md` tells it about your projects, and lets it read the folders you list
+(by default all of `Documents\GitHub`) and search the web — no commands, no file
+edits, nothing to approve. One process serves the whole chat: it starts with
+your first message, answers the next ones in about two seconds, and goes away
+with **+** (a new conversation) or when Coucou quits. Details and the reasons in
+`src-tauri/src/chat_cc.rs`.
+
+With **Anthropic API key** instead, **Settings… → Chat** takes your key. Keys
+live in the **Windows Credential Manager**, never on disk and never in the
+interface — the island can only ask whether a key exists. Same for every
+integration key.
 
 No telemetry. The only network requests Coucou makes are to the services you
 configure yourself.

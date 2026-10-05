@@ -13,10 +13,12 @@ import { Cdp } from "./cdp";
 import {
   EXTENSION_ID,
   EXTENSION_MANIFEST,
+  FAKE_CLAUDE,
   FAKE_CODE,
   INSTANCE,
   RESULTS_DIR,
   SANDBOX_HOME,
+  fakeClaudeCalls,
   fakeCodeCalls,
   runHookInWslHolding,
   wslHookCommandBeforePpid,
@@ -72,6 +74,9 @@ let wslRoutingProven = false;
 const wsl = wslTarget();
 const WSL_CWD = "/home/e2e/coucou-e2e-wsl";
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** The chat's hub for the suite, with a CLAUDE.md to recognise, and a readable folder (D-016). */
+const CHAT_HUB = path.join(RESULTS_DIR, "chat-hub");
+const CHAT_READABLE = path.join(RESULTS_DIR, "chat-readable");
 
 const base = (extra: Record<string, unknown> = {}) => ({
   session_id: "e2e-session",
@@ -146,7 +151,12 @@ describe(`side instance "${INSTANCE}"`, () => {
   let fakeWindow: FakeVsCodeWindow | null = null;
 
   beforeAll(async () => {
-    app = await launchApp(sid);
+    fs.rmSync(CHAT_HUB, { recursive: true, force: true });
+    fs.mkdirSync(CHAT_HUB, { recursive: true });
+    fs.mkdirSync(CHAT_READABLE, { recursive: true });
+    fs.writeFileSync(path.join(CHAT_HUB, "CLAUDE.md"), "# Hub de la suite\n\nLa palabra clave es PALABRA-E2E.\n");
+    fs.writeFileSync(path.join(CHAT_READABLE, "notas.txt"), "nada importante\n");
+    app = await launchApp(sid, { chatEngine: "claude-code", chatHub: CHAT_HUB, chatDirs: [CHAT_READABLE] });
     ({ cdp } = await Cdp.connect(app.port, (t) => t.title === "Coucou" && !t.url.includes("settings")));
     page = new IslandPage(cdp);
     await page.watch();
@@ -1314,8 +1324,162 @@ describe(`side instance "${INSTANCE}"`, () => {
     await page.waitForView("the card to drop", (v) => v.code === null, 10_000);
   }, 150_000);
 
+  // ── The chat through Claude Code (D-016), against the fake `claude` ────────
+  //
+  // Driven through the chat's own commands rather than the chat view: opening
+  // the view gives the island keyboard focus, which would take it from whoever
+  // is using the machine. The view's own code only calls chat_send and
+  // chat_reset; the "+" button is clicked in the DOM.
+  describe("the chat through Claude Code", () => {
+    /** Set once chat_status shows the fake: no message is sent before that. */
+    let chatIsFake = false;
+    let firstPid = 0;
+    let firstSession = "";
+
+    const requireFake = () => {
+      if (!chatIsFake) throw new Error("the chat is not proven to run the fake `claude` — not sending anything");
+    };
+
+    /** chat_send, as { text } or { error } — never a throw. */
+    const chat = (query: string, context: Record<string, unknown> | null = null) =>
+      page.cdp.evaluate<{ text?: string; error?: string }>(
+        `window.__TAURI_INTERNALS__.invoke("chat_send", ${JSON.stringify({ query, context })})` +
+          `.then((r) => ({ text: r.text }), (e) => ({ error: String(e) }))`,
+      );
+
+    const echo = (text: string | undefined) => {
+      const m = /^eco: (.*) · pid (\d+) · turno (\d+) · sesión (\S+)$/.exec(text ?? "");
+      if (!m) throw new Error(`not an answer from the fake: ${JSON.stringify(text)}`);
+      return { said: m[1], pid: Number(m[2]), turn: Number(m[3]), session: m[4] };
+    };
+
+    const startOf = (pid: number) => {
+      const entry = fakeClaudeCalls().find((c) => c.event === "start" && c.pid === pid);
+      if (!entry?.args) throw new Error(`no recorded start for pid ${pid}`);
+      return { args: entry.args, cwd: entry.cwd ?? "" };
+    };
+
+    const valueOf = (args: string[], flag: string) => {
+      const i = args.indexOf(flag);
+      return i >= 0 ? args[i + 1] : null;
+    };
+
+    it("runs the suite's fake `claude`, never the real one", async () => {
+      const status = await page.invoke<{ engine: string; exe: string | null; hubExists: boolean }>("chat_status");
+      expect(status.engine).toBe("claude-code");
+      expect(path.resolve(status.exe ?? "").toLowerCase()).toBe(path.resolve(FAKE_CLAUDE).toLowerCase());
+      expect(status.hubExists).toBe(true);
+      chatIsFake = true;
+    });
+
+    it("starts it restricted and read-only, in the hub, with the hub's CLAUDE.md", async () => {
+      requireFake();
+      const reply = await chat("hola");
+      const e = echo(reply.text);
+      expect(e).toMatchObject({ said: "hola", turn: 1 });
+      firstPid = e.pid;
+      firstSession = e.session;
+      expect(firstSession).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+
+      const { args, cwd } = startOf(firstPid);
+      expect(path.resolve(cwd).toLowerCase()).toBe(path.resolve(CHAT_HUB).toLowerCase());
+      const joined = args.join(" ");
+      for (const flag of [
+        "-p",
+        "--input-format stream-json",
+        "--output-format stream-json",
+        "--restricted",
+        "--strict-mcp-config",
+        "--permission-mode dontAsk",
+        "--permission-prompts none",
+        "--tools Read,Glob,Grep,WebSearch,WebFetch",
+        `--session-id ${firstSession}`,
+      ]) {
+        expect(joined, flag).toContain(flag);
+      }
+      expect(args).not.toContain("--resume");
+      expect(args).not.toContain("--model");
+      for (const never of ["bypassPermissions", "acceptEdits", "--dangerously-skip-permissions"]) {
+        expect(joined).not.toContain(never);
+      }
+      // The readable folders: the configured one, and the inbox dropped files land in.
+      const afterAddDir = args.slice(args.indexOf("--add-dir") + 1);
+      const end = afterAddDir.findIndex((a) => a.startsWith("--"));
+      const dirs = end < 0 ? afterAddDir : afterAddDir.slice(0, end);
+      expect(dirs.map((d) => d.toLowerCase())).toContain(path.resolve(CHAT_READABLE).toLowerCase());
+      expect(dirs.some((d) => /inbox$/i.test(d))).toBe(true);
+      // The system prompt it was handed: the island note and the hub's CLAUDE.md.
+      const system = fs.readFileSync(valueOf(args, "--append-system-prompt-file") ?? "", "utf8");
+      expect(system).toContain("chat box of the user's island");
+      expect(system).toContain("PALABRA-E2E");
+      expect(system).toContain(CHAT_READABLE);
+      await waitForLog(new RegExp(String.raw`chat: started Claude Code, pid \d+ \(new conversation ${firstSession}\)`), 3_000);
+    });
+
+    it("a second message goes to the same process, as its next turn", async () => {
+      requireFake();
+      const e = echo((await chat("¿seguís ahí?")).text);
+      expect(e).toMatchObject({ said: "¿seguís ahí?", pid: firstPid, turn: 2, session: firstSession });
+      expect(fakeClaudeCalls().filter((c) => c.event === "start")).toHaveLength(1);
+    });
+
+    it("a turn that fails is reported, and the process lives on", async () => {
+      requireFake();
+      expect((await chat("fallá, por favor")).error).toContain("Fake failure");
+      const e = echo((await chat("de nuevo")).text);
+      expect(e).toMatchObject({ pid: firstPid, turn: 4 });
+    });
+
+    it("if it dies, the next message starts it again on the same conversation (--resume)", async () => {
+      requireFake();
+      expect((await chat("morite")).error).toMatch(/Claude Code stopped before answering/);
+      const e = echo((await chat("¿dónde estábamos?")).text);
+      expect(e.pid).not.toBe(firstPid);
+      expect(e).toMatchObject({ said: "¿dónde estábamos?", turn: 1, session: firstSession });
+      const { args } = startOf(e.pid);
+      expect(valueOf(args, "--resume")).toBe(firstSession);
+      expect(args).not.toContain("--session-id");
+    });
+
+    it("+ starts a new conversation, with a new id; a dropped file rides along with its first message", async () => {
+      requireFake();
+      const before = fakeClaudeCalls().filter((c) => c.event === "start").at(-1)!.pid;
+      const clicked = await page.cdp.evaluate<boolean>(
+        `(() => { const b = document.querySelector(".new-chat-btn"); if (!b) return false; b.click(); return true; })()`,
+      );
+      expect(clicked).toBe(true);
+      // The old process goes: killed, its stdin closed.
+      await waitFor("the previous Claude Code to exit", () => fakeClaudeCalls().some((c) => c.pid === before && c.event === "exit"), 5_000);
+
+      const file = path.join(CHAT_READABLE, "notas.txt");
+      const e = echo((await chat("¿qué dice?", { kind: "file", name: "notas.txt", path: file })).text);
+      expect(e.pid).not.toBe(before);
+      expect(e.turn).toBe(1);
+      expect(e.session).not.toBe(firstSession);
+      expect(valueOf(startOf(e.pid).args, "--session-id")).toBe(e.session);
+      const first = fakeClaudeCalls().find((c) => c.event === "message" && c.pid === e.pid)!;
+      expect(first.text).toBe(`The user dropped a file on the island: "notas.txt", at ${file}. Read it to answer.\n\n¿qué dice?`);
+      // Only the first message of a conversation carries it.
+      expect(fakeClaudeCalls().filter((c) => c.event === "message" && c.pid === e.pid)).toHaveLength(1);
+      const next = echo((await chat("¿y algo más?", { kind: "file", name: "notas.txt", path: file })).text);
+      expect(next.turn).toBe(2);
+      expect(fakeClaudeCalls().filter((c) => c.event === "message" && c.pid === e.pid).at(-1)!.text).toBe("¿y algo más?");
+    });
+  });
+
   it("the island threw no uncaught exception", () => {
     expect(page.exceptions).toEqual([]);
+  });
+});
+
+// Before the next launch, which wipes the fake `claude`'s folder and its record.
+describe("once the first app has quit", () => {
+  it("every Claude Code the chat started has gone — the last one with the app, its stdin closed", async () => {
+    const ended = (pid: number) => fakeClaudeCalls().some((c) => c.pid === pid && (c.event === "exit" || c.event === "crash"));
+    const started = fakeClaudeCalls().filter((c) => c.event === "start").map((c) => c.pid);
+    expect(started.length).toBeGreaterThan(2);
+    await waitFor("every fake Claude Code to end", () => started.every(ended), 5_000).catch(() => undefined);
+    for (const pid of started) expect(ended(pid), `pid ${pid}`).toBe(true);
   });
 });
 
