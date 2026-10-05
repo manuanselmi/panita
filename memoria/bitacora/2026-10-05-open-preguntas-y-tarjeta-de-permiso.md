@@ -60,6 +60,21 @@ solo escribe `chat\settings.json` en la carpeta de la app, nunca el `~/.claude/s
 Suites en PowerShell: Rust 103 + 24, vitest 463, e2e 70 y 1 salteado. Manuel mergeó
 (`f5e00a8`) e hizo Quit; se reinstaló con `/S` y la app arrancó desde `%LOCALAPPDATA%\Coucou`.
 
+### 4. Pegar imágenes en el chat (D-019)
+
+Manuel: "no puedo pegar imágenes al chat de panita". La caja era un `<input>` sin manejo de
+pegado, y el único camino para una imagen era arrastrarla a la isla, que además solo viajaba con
+el primer mensaje. Rama `chat-paste`: `Ctrl+V` de una imagen la guarda en el inbox
+(`paste_image`, bytes como cuerpo crudo) y va con el próximo mensaje, sea o no el primero.
+Tests: Rust (`files.rs`, nombre, tipos y tamaño), `bridge.test.ts`, y en el e2e un `paste` real
+del DOM con un PNG (sin abrir la vista de chat, que tomaría el teclado), verificado en el inbox
+de la instancia lateral y en el mensaje que recibe el `claude` falso.
+
+En la primera corrida falló el e2e de la tarjeta de pregunta (y en cascada el siguiente): medía
+los renglones antes de que la isla terminara de crecer, y con la isla baja el flex achica las
+filas. Había pasado antes por timing. Ahora espera el tamaño final, y contesta la pregunta en un
+`finally` para no dejar la tarjeta arriba si algo falla.
+
 ## Qué se aprendió
 
 - `[CONFIRMADO]` (leyendo `workbench.desktop.main.js` de VS Code 1.140): VS Code agrega

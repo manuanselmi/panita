@@ -501,3 +501,29 @@ dicho ("plegada, nadie podría contestarla hasta que el relay se rinda"):
 hasta los 110 s del relay; ahora al menos se cierra con un click (pregunta O7). Si una versión
 futura de Claude Code dejara de mostrar el diálogo en paralelo, plegar sobre un permiso seguiría
 siendo seguro (el decline hace que pregunte la terminal) pero volvería a tener sentido revisarlo.
+
+---
+
+## D-019 — Pegar una imagen en el chat la guarda en el inbox y va con el próximo mensaje
+
+**Fecha:** 2026-10-05 · **Estado:** vigente
+
+**Contexto.** Manuel: "no puedo pegar imágenes al chat de panita". La caja del chat era un
+`<input>` de texto sin manejo de pegado: un `Ctrl+V` de imagen se perdía. Lo único que existía
+era arrastrar un archivo a la isla (se copia al inbox, Claude Code lo lee con `Read`), y solo
+viajaba con el primer mensaje de la conversación.
+
+**Decisión.** Un `Ctrl+V` con una imagen (PNG, JPEG, GIF, WebP; hasta 25 MB) la guarda en el
+inbox como `pegada-<fecha>-<hora>.<ext>` (comando `paste_image`, con los bytes como cuerpo crudo
+del pedido, no como JSON), la muestra como chip y la manda con el **próximo** mensaje, sea el
+primero o no. Lo decide la isla (`State.pendingFile`): Rust manda el contexto cada vez que lo
+recibe, en los dos motores (Claude Code y API). El mensaje dice "The user attached a file to this
+message: …", para archivos arrastrados y pegados por igual.
+
+**Descartada — mandar la imagen dentro del mensaje** como bloque de imagen del stream-json.
+Ahorraría la llamada a `Read`, pero no se verificó que el CLI la acepte en `-p --input-format
+stream-json`, y probarlo gasta la suscripción. Si pegar resulta lento, es el siguiente paso.
+
+**Consecuencias.** Una imagen por mensaje: un segundo pegado antes de mandar reemplaza al
+primero. La imagen pasa por las reglas de lectura de D-017 como cualquier archivo del inbox (un
+nombre `pegada-…` no las toca). El inbox se barre a la semana, como siempre.
