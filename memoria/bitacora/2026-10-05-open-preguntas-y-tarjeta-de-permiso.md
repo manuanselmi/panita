@@ -51,6 +51,15 @@ en "…"; y poder cerrar la isla siempre con un click arriba, aunque haya una pr
    `COUCOU_E2E_SLOW`). Se miraron las capturas `1c2-question`, `36-explain-two-lines`,
    `37-explain-long` y `1a-approval-session`.
 
+### 3. Integración e instalación
+
+Manuel mergeó `permission-card` (`8f7be3b`). Después se integró `chat-deny` (la otra sesión,
+D-017) en `integration3`: un cherry-pick sobre `main` con un solo conflicto, el final de
+`memoria/decisiones.md` (quedó D-017 antes de D-018). Se revisó a mano su diff de producción:
+solo escribe `chat\settings.json` en la carpeta de la app, nunca el `~/.claude/settings.json`.
+Suites en PowerShell: Rust 103 + 24, vitest 463, e2e 70 y 1 salteado. Manuel mergeó
+(`f5e00a8`) e hizo Quit; se reinstaló con `/S` y la app arrancó desde `%LOCALAPPDATA%\Coucou`.
+
 ## Qué se aprendió
 
 - `[CONFIRMADO]` (leyendo `workbench.desktop.main.js` de VS Code 1.140): VS Code agrega
@@ -85,13 +94,11 @@ en "…"; y poder cerrar la isla siempre con un click arriba, aunque haya una pr
 
 ## Qué queda pendiente
 
-- Merge de `permission-card` (incluye `fix-title-editor-state`), reinstalar y probar a mano:
-  "↗" en KairoWeb con un archivo untracked o modificado activo; una pregunta real de Claude; el
-  click en el header sobre un permiso (que la terminal siga preguntando); un doble click que no
-  reabra la isla. Nada de esto se vio todavía en la app instalada.
-- Al integrar con `chat-deny`: el que entra segundo rebasea; chocan `memoria/decisiones.md`,
-  `windows/README.md`, `windows/TESTING.md` y `windows/tests/e2e/island.e2e.ts` (texto, en
-  secciones distintas).
+- Probar a mano en la app instalada: "↗" en KairoWeb con un archivo untracked o modificado
+  activo; una pregunta real de Claude; el click en el header sobre un permiso (que la terminal
+  siga preguntando); un doble click que no reabra la isla. Nada de esto se vio todavía.
+- La rama `chat-deny` (de la otra sesión) quedó vieja: su commit ya está en `main` como
+  `f5e00a8`. No se vuelve a mergear; esa sesión tiene que pasarse a `main`.
 - Preguntas nuevas: I5 (contestar la pregunta desde la isla) y O7 (sacar la tarjeta de permiso
   cuando se contesta en la terminal).
 - Fuera de panita: si Manuel no usa lector de pantalla,
