@@ -46,9 +46,9 @@ Lo que el fork agregó sobre upstream (detalle y porqués en `memoria/decisiones
 
 | Qué | Dónde | Estado |
 |---|---|---|
-| App | `%LOCALAPPDATA%\Coucou\` (instalador NSIS por usuario, sin admin) | Instalada desde `main` `a65391c` |
-| Hooks Windows | `%USERPROFILE%\.claude\settings.json` | Instalados (relay en `%LOCALAPPDATA%\Coucou\bin`) |
-| Hooks WSL | `~/.claude/settings.json` de `Ubuntu-24.04` | Instalados, con `--wsl-ppid` |
+| App | `%LOCALAPPDATA%\Coucou\` (instalador NSIS por usuario, sin admin) | Instalada desde `main` `1ff89d2` (barra de uso, D-020) |
+| Hooks Windows | `%USERPROFILE%\.claude\settings.json` | Instalados (relay en `%LOCALAPPDATA%\Coucou\bin`); falta **Update…** para la `statusLine` de la barra de uso (D-020) |
+| Hooks WSL | `~/.claude/settings.json` de `Ubuntu-24.04` | Instalados, con `--wsl-ppid`; falta **Update…** para la `statusLine` (D-020) |
 | Extensión VS Code | `coucou.terminal-focus` 0.1.0 | Instalada (por CLI) |
 | Chat de la isla | corre el `claude` oficial, restringido y de solo lectura (D-016), sin leer secretos ni datos de clientes (D-017) | Instalado |
 
