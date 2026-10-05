@@ -46,7 +46,7 @@ Lo que el fork agregó sobre upstream (detalle y porqués en `memoria/decisiones
 
 | Qué | Dónde | Estado |
 |---|---|---|
-| App | `%LOCALAPPDATA%\Coucou\` (instalador NSIS por usuario, sin admin) | Instalada desde `main` `f5e00a8` |
+| App | `%LOCALAPPDATA%\Coucou\` (instalador NSIS por usuario, sin admin) | Instalada desde `main` `a65391c` |
 | Hooks Windows | `%USERPROFILE%\.claude\settings.json` | Instalados (relay en `%LOCALAPPDATA%\Coucou\bin`) |
 | Hooks WSL | `~/.claude/settings.json` de `Ubuntu-24.04` | Instalados, con `--wsl-ppid` |
 | Extensión VS Code | `coucou.terminal-focus` 0.1.0 | Instalada (por CLI) |
