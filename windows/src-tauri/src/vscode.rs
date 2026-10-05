@@ -25,9 +25,10 @@
 //
 // The title is all we have to go on — VS Code exposes no API for "which
 // folder is this window" — and its default format is
-//   `[● ]<editor> - <rootName>[ - <profile>] - Visual Studio Code`
+//   `[● ]<editor> - <rootName>[ - <profile>] - Visual Studio Code[ - <state>]`
 // where rootName is the folder's name, or `<name> [WSL: <distro>]` for a
-// window connected to WSL. A user-customised `window.title` simply means no
+// window connected to WSL, and the state only shows in screen reader mode
+// (`workspace_part`). A user-customised `window.title` simply means no
 // match, and the fallback opens the folder as before.
 
 use std::collections::HashMap;
@@ -94,18 +95,26 @@ enum Strength {
 }
 
 /// The part of a VS Code title before ` - Visual Studio Code`, without the
-/// dirty marker and a trailing ` [Administrator]`-style note. `None` for
-/// anything that is not a main editor window title, or one with no folder.
+/// dirty marker. `None` for anything that is not a main editor window title,
+/// or one with no folder.
+///
+/// After the app name a title may carry, in this order: ` - <editor state>`
+/// and a ` [Administrator]`-style note. The state is `${activeEditorState}`,
+/// which VS Code appends to the template — custom or default — whenever it is
+/// in screen reader mode (`accessibility.windowTitleOptimized`, on by
+/// default): the active editor's decoration tooltip, e.g. `Untracked` or
+/// `Modified`, so it comes and goes as the user switches files. VS Code
+/// Insiders names itself `Visual Studio Code - Insiders`; its windows belong
+/// to another executable anyway, but its title is not read as a state either.
 fn workspace_part(title: &str) -> Option<&str> {
-    let mut t = title.trim();
-    if t.ends_with(']') {
-        if let Some(i) = t.rfind(" [") {
-            if t[..i].ends_with(APP_NAME) {
-                t = &t[..i];
-            }
-        }
-    }
-    let rest = t.strip_suffix(APP_NAME)?.strip_suffix(" - ")?;
+    let t = title.trim();
+    let marker = format!(" - {APP_NAME}");
+    let rest = t.rmatch_indices(&marker).find_map(|(i, _)| {
+        let tail = &t[i + marker.len()..];
+        let insiders = tail == " - Insiders" || tail.starts_with(" - Insiders ");
+        let fits = tail.is_empty() || tail.starts_with(" - ") || (tail.starts_with(" [") && tail.ends_with(']'));
+        (fits && !insiders).then(|| &t[..i])
+    })?;
     let rest = rest.strip_prefix(DIRTY).unwrap_or(rest);
     (!rest.is_empty()).then_some(rest)
 }
@@ -654,11 +663,38 @@ mod tests {
         assert_eq!(workspace_part("● main.rs - panita - Visual Studio Code"), Some("main.rs - panita"));
         assert_eq!(workspace_part("main.rs - panita - Visual Studio Code [Administrator]"), Some("main.rs - panita"));
         assert_eq!(workspace_part("x - p [WSL: Ubuntu] - Visual Studio Code [Unsupported]"), Some("x - p [WSL: Ubuntu]"));
+        // Screen reader mode appends `${activeEditorState}` after the app name:
+        // the active editor's decoration tooltip (git status, problems).
+        assert_eq!(workspace_part("a.jpg - KairoWeb - Visual Studio Code - Untracked"), Some("a.jpg - KairoWeb"));
+        assert_eq!(workspace_part("● main.rs - p - Visual Studio Code - Modified, 2 problems"), Some("main.rs - p"));
+        assert_eq!(workspace_part("x - p [WSL: Ubuntu] - Visual Studio Code - Untracked"), Some("x - p [WSL: Ubuntu]"));
+        assert_eq!(workspace_part("main.rs - p - Visual Studio Code - Modified [Administrator]"), Some("main.rs - p"));
         // Not main windows, or no folder at all.
         assert_eq!(workspace_part("Visual Studio Code"), None);
+        assert_eq!(workspace_part("Visual Studio Code - Untracked"), None);
         assert_eq!(workspace_part("Process Explorer"), None);
         assert_eq!(workspace_part("DevTools - vscode-file://vscode-app/x"), None);
         assert_eq!(workspace_part("panita - Visual Studio Code - Insiders"), None);
+        assert_eq!(workspace_part("panita - Visual Studio Code - Insiders - Untracked"), None);
+        assert_eq!(workspace_part("panita - Visual Studio Code - Insiders [Administrator]"), None);
+    }
+
+    #[test]
+    fn a_window_whose_title_carries_the_editor_state_is_still_found() {
+        // Listed on this machine on 2026-10-05 (VS Code 1.140, screen reader
+        // mode on): the KairoWeb window had an untracked image open, and ↗ on
+        // its session showed the terminal but left the window where it was.
+        let titles = [
+            "ronda1b-hoja.jpg - KairoWeb - Visual Studio Code - Untracked",
+            "Welcome - panita - Visual Studio Code",
+            "prompt_arena.md - struxto-especificador [WSL: Ubuntu-24.04] - Visual Studio Code",
+        ];
+        assert_eq!(window_named(&titles, "KairoWeb"), Some(0));
+        assert_eq!(pick(&titles, r"C:\Users\manua\Documents\GitHub\Personal\KairoWeb", None), Some(0));
+        assert_eq!(
+            plan(&titles, Some(r"C:\Users\manua\Documents\GitHub\Personal\KairoWeb"), None, true, Some(&shown(Some("KairoWeb")))),
+            Plan::Focus(0)
+        );
     }
 
     #[test]
