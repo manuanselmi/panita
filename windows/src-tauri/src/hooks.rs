@@ -21,6 +21,12 @@
 // settings path plus how the command reads — so it is tested against temporary
 // folders and never against a real home.
 //
+// Besides the hooks, the same flow writes a `statusLine`: the relay once more
+// (`coucou-hook StatusLine`), so Claude Code hands it the subscription's usage
+// — `rate_limits`, which it gives status lines and not hooks — for the island's
+// usage bar. It prints nothing, so the terminal's status line stays empty. A
+// file holds one status line: somebody else's is never replaced.
+//
 // A command Coucou wrote earlier can differ from the one it would write now —
 // the WSL command gained `--wsl-ppid`, the relay can move. Such an install is
 // *outdated*: the settings window says so and offers the same preview →
@@ -254,6 +260,17 @@ impl Location {
         format!("{} {event}{}", self.relay, self.tail)
     }
 
+    /// The `statusLine` Coucou writes: the relay again, which hands the
+    /// subscription's usage to the island's bar (pipe.rs) and prints nothing,
+    /// so the terminal's status line stays empty.
+    fn status_line(&self) -> Value {
+        json!({
+            "type": "command",
+            "command": self.command(crate::pipe::STATUS_LINE),
+            "padding": 0,
+        })
+    }
+
     /// The entry Coucou writes for `event` — exactly one per event.
     fn entry(&self, event: &str, timeout: u64) -> Value {
         json!({
@@ -320,20 +337,38 @@ fn entry_is_ours(entry: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn is_installed(settings: &Value) -> bool {
+/// The file's `statusLine`, if it runs the relay.
+fn status_line_is_ours(settings: &Value) -> bool {
     settings
-        .get("hooks")
-        .and_then(Value::as_object)
-        .map(|hooks| hooks.values().filter_map(Value::as_array).flatten().any(entry_is_ours))
-        .unwrap_or(false)
+        .get("statusLine")
+        .and_then(|s| s.get("command"))
+        .and_then(Value::as_str)
+        .is_some_and(|c| c.contains(MARKER))
+}
+
+/// The file has a `statusLine` of somebody else's. There is only one per file,
+/// so Coucou leaves it alone — and the island's usage bar stays empty.
+fn status_line_is_foreign(settings: &Value) -> bool {
+    settings.get("statusLine").is_some() && !status_line_is_ours(settings)
+}
+
+fn is_installed(settings: &Value) -> bool {
+    status_line_is_ours(settings)
+        || settings
+            .get("hooks")
+            .and_then(Value::as_object)
+            .map(|hooks| hooks.values().filter_map(Value::as_array).flatten().any(entry_is_ours))
+            .unwrap_or(false)
 }
 
 /// Every event Coucou listens to has exactly one entry of ours, and it is the
 /// one `merged` would write now. Where in an event's list it sits, and what
 /// else is there, does not matter — so a current install never reads as
-/// outdated just because another tool added a hook after ours.
+/// outdated just because another tool added a hook after ours. The status
+/// line is ours as `merged` would write it, or somebody else's (left alone).
 fn is_current(settings: &Value, at: &Location) -> bool {
-    HOOK_EVENTS.iter().all(|(event, timeout)| {
+    let status_line = status_line_is_foreign(settings) || settings.get("statusLine") == Some(&at.status_line());
+    status_line && HOOK_EVENTS.iter().all(|(event, timeout)| {
         let ours: Vec<&Value> = settings
             .get("hooks")
             .and_then(|h| h.get(*event))
@@ -365,12 +400,19 @@ fn merged(existing: &Value, at: &Location) -> Value {
     }
 
     root.insert("hooks".into(), Value::Object(hooks));
+    // The status line carries the subscription's usage to the island's bar.
+    if !status_line_is_foreign(existing) {
+        root.insert("statusLine".into(), at.status_line());
+    }
     Value::Object(root)
 }
 
 /// Settings with every Coucou entry removed, and nothing else changed.
 fn without_ours(existing: &Value) -> Value {
     let mut root = existing.as_object().cloned().unwrap_or_default();
+    if status_line_is_ours(existing) {
+        root.remove("statusLine");
+    }
     let Some(hooks) = root.get("hooks").and_then(Value::as_object).cloned() else {
         return Value::Object(root);
     };
@@ -967,6 +1009,40 @@ mod tests {
         assert_eq!(std::fs::read(&backup).unwrap(), original, "the backup holds the old install");
         assert_eq!(status_at(&at), InstallState { installed: true, outdated: false, error: None });
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn the_status_line_is_the_relay_and_somebody_elses_is_left_alone() {
+        for at in [windows_at(Path::new(r"C:\h")), wsl_at(Path::new(r"C:\h"))] {
+            let fresh = merged(&json!({ "model": "opus" }), &at);
+            assert_eq!(
+                fresh["statusLine"],
+                json!({ "type": "command", "command": at.command("StatusLine"), "padding": 0 })
+            );
+            assert!(is_current(&fresh, &at));
+            // Removing ours takes the status line with it.
+            assert_eq!(without_ours(&fresh), json!({ "model": "opus" }));
+
+            // Hooks from before the status line: installed, but an Update… adds it.
+            let mut before = fresh.clone();
+            before.as_object_mut().unwrap().remove("statusLine");
+            assert!(is_installed(&before));
+            assert!(!is_current(&before, &at));
+            assert!(is_current(&merged(&before, &at), &at));
+
+            // Somebody else's status line: kept on install and on uninstall, and
+            // the install is current without ours.
+            let theirs = json!({ "type": "command", "command": "~/.claude/my-status.sh" });
+            let mut with_theirs = json!({ "statusLine": theirs.clone() });
+            with_theirs = merged(&with_theirs, &at);
+            assert_eq!(with_theirs["statusLine"], theirs);
+            assert!(is_current(&with_theirs, &at));
+            assert_eq!(without_ours(&with_theirs), json!({ "statusLine": theirs }));
+        }
+        assert_eq!(
+            windows_at(Path::new(r"C:\h")).command("StatusLine"),
+            r#""C:/Users/Test User/AppData/Local/Coucou/bin/coucou-hook.exe" StatusLine"#
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@
 import { PANITA_SLOTS, type BotEmoteName, type BotStateName, type IslandMode, type IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 import type { Explanation } from "./explain";
+import type { Usage } from "./usage";
 import {
   SESSION_DWELL_MS, SESSION_EXPIRY_MS, orderSessions, pickOrdinal, pickSessionColor, sameOrder,
 } from "./sessions";
@@ -264,6 +265,8 @@ class AppState {
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
+  /** The subscription's usage, from Claude Code's status line (usage.ts); null until one arrives. */
+  usage: Usage | null = null;
   /**
    * How much taller than its VIEW_LAYOUTS height a card is drawn, px, by view:
    * the approval card when its explanation needs a second or third line, the

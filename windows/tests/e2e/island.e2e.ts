@@ -340,6 +340,66 @@ describe(`side instance "${INSTANCE}"`, () => {
     await waitFor("the compact island", async () => (await page.settle()).width === SIZES.compact.width, 3_000);
   });
 
+  it("the status line's 5-hour usage reaches both meters, through the real relay, as no session", async () => {
+    // Folded by the test above: the compact island, no usage known yet.
+    await waitFor("the compact island", async () => (await page.settle()).width === SIZES.compact.width);
+    let meters = await page.usageMeters();
+    expect(meters.header.shown).toBe(false);
+    expect(meters.compact.shown).toBe(false);
+
+    const from = readSideLog().length;
+    const inTwoHours = Math.floor(Date.now() / 1000) + 2 * 3600;
+    // What Claude Code hands its status line command (2.1.289), cut down.
+    const status = (fivePct: number) => ({
+      session_id: "e2e-status",
+      cwd: CWD,
+      model: { id: "claude-opus-5-5", display_name: "Opus" },
+      rate_limits: {
+        five_hour: { used_percentage: fivePct, resets_at: inTwoHours },
+        seven_day: { used_percentage: 18, resets_at: inTwoHours + 4 * 86_400 },
+      },
+    });
+    const run = await runHook("StatusLine", status(42));
+    // Nothing printed: the terminal's status line stays empty. And quick.
+    expect(run).toMatchObject({ code: 0, stdout: "", stderr: "" });
+    expect(run.ms).toBeLessThan(QUICK_MS);
+
+    meters = await waitFor("the compact meter at 42%", async () => {
+      const m = await page.usageMeters();
+      return m.compact.shown && m.compact.pct === "42%" ? m : null;
+    });
+    expect(meters.compact).toMatchObject({ level: "ok", fill: "42%", opacity: 1 });
+    expect(Math.abs(meters.compact.offCentre)).toBeLessThanOrEqual(1);
+    expect(meters.compact.title).toMatch(/^5-hour limit: 42% used · resets at \d\d:\d\d\nWeekly limit: 18% used$/);
+    await page.screenshot("04c-usage-compact");
+    // Not a session event: not logged, no session made of it.
+    expect(readSideLog().slice(from)).not.toContain("StatusLine");
+    expect((await page.overview()).primary?.name).not.toBe("e2e-status");
+
+    // Open: the header's meter, centred on the island; the compact one fades out.
+    await page.emit("tray", "open");
+    await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
+    meters = await page.usageMeters();
+    expect(meters.header).toMatchObject({ shown: true, pct: "42%", level: "ok", fill: "42%" });
+    expect(Math.abs(meters.header.offCentre)).toBeLessThanOrEqual(1);
+    expect(meters.compact.opacity).toBe(0);
+    await page.screenshot("04d-usage-header");
+
+    // Amber from 80 %, red from 95 %.
+    await runHook("StatusLine", status(85));
+    await waitFor("amber", async () => (await page.usageMeters()).header.level === "warn");
+    await page.screenshot("04e-usage-warn");
+    await runHook("StatusLine", status(97));
+    await waitFor("red", async () => (await page.usageMeters()).header.level === "high");
+
+    // The strip reaches the island's top and sides, and the meter is part of
+    // it: a click on it folds the island like any other click on the strip.
+    expect(await page.headerEdges()).toEqual({ top: 0, left: 0, right: 0 });
+    await page.clickHeader("usage");
+    await waitFor("the compact island", async () => (await page.settle()).width === SIZES.compact.width, 3_000);
+    await runHook("StatusLine", status(42));
+  });
+
   it("PermissionRequest → Deny prints the documented deny JSON", async () => {
     const from = readSideLog().length;
     const hook = runHook("PermissionRequest", permission("git push --force"));
@@ -1140,6 +1200,13 @@ describe(`side instance "${INSTANCE}"`, () => {
     const after = JSON.parse(fs.readFileSync(file, "utf8"));
     expect(after.hooks.PreToolUse).toEqual([{ hooks: [{ type: "command", command: expected, timeout: 10 }] }]);
     expect(Object.keys(after.hooks)).toHaveLength(12);
+    // And the status line, which carries the subscription's usage to the island.
+    expect(pv.diff).toContain('"statusLine"');
+    expect(after.statusLine).toEqual({
+      type: "command",
+      command: `"${side.stagedHook.replace(/\\/g, "/")}" StatusLine`,
+      padding: 0,
+    });
 
     await settings.waitForRow("windows", (r) => r.state === "Installed");
     await settings.clickInRow("windows", "Uninstall…");
@@ -1335,6 +1402,7 @@ describe(`side instance "${INSTANCE}"`, () => {
       });
     }
     expect(Object.keys(after.hooks)).toHaveLength(12);
+    expect(after.statusLine).toEqual({ type: "command", command: wslHookCommand(relayLinux, "StatusLine"), padding: 0 });
     const backups = fs.readdirSync(path.dirname(file)).filter((f) => f.startsWith("settings.json.bak-"));
     expect(backups).toHaveLength(1);
     expect(fs.readFileSync(path.join(path.dirname(file), backups[0]), "utf8")).toBe(originalText);
@@ -1355,6 +1423,16 @@ describe(`side instance "${INSTANCE}"`, () => {
     const seen = await waitFor("the installed command's payload", async () =>
       (await page.hooksSeen()).find((p) => p.cwd === "/home/e2e/installed-command"));
     expect(seen.wsl_distro).toBe(distro);
+
+    // The installed status line, run the same way: its usage reaches the meters.
+    const statusRun = await runHookInWsl(distro, after.statusLine.command, {
+      session_id: "e2e-wsl-installed",
+      cwd: "/home/e2e/installed-command",
+      rate_limits: { five_hour: { used_percentage: 64, resets_at: Math.floor(Date.now() / 1000) + 3600 } },
+    });
+    expect(statusRun.code, statusRun.stderr).toBe(0);
+    expect(statusRun.stdout).toBe("");
+    await waitFor("the meters at 64%", async () => (await page.usageMeters()).compact.pct === "64%");
 
     // Uninstall puts the file back the way it was.
     await settings.waitForRow(id, (r) => r.state === "Installed");

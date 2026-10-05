@@ -134,6 +134,18 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
         None => String::new(),
     };
 
+    // Claude Code's status line (installed with the hooks): only the
+    // subscription's usage goes on, to the island's usage bar. It refreshes
+    // every few seconds while a session works, so it is not logged, and it is
+    // not a session event — no session is created or touched by it.
+    if event == STATUS_LINE {
+        if let Some(usage) = usage_of(&payload) {
+            let _ = app.emit_to(WINDOW_LABEL, "usage", usage);
+        }
+        let _ = pipe.disconnect();
+        return;
+    }
+
     // Which terminal the session runs in (ancestor_pids, wsl_ppid): kept here
     // for "Open", never shown to the island. See terminal.rs.
     app.state::<crate::terminal::Terminals>().observe(&event, &payload);
@@ -229,6 +241,37 @@ pub fn decline(app: &AppHandle, request_id: &str) {
     send(app, request_id, Reply::Decline, false);
 }
 
+/// The event name the relay gives Claude Code's status line (hooks.rs writes
+/// `coucou-hook StatusLine` as the `statusLine` command).
+pub const STATUS_LINE: &str = "StatusLine";
+
+/// What the island's usage bar needs from a status line's JSON: the 5-hour
+/// and 7-day windows of `rate_limits`, each `{ usedPercentage, resetsAt }`
+/// (percent 0–100, Unix seconds), or null when Claude Code did not send it.
+/// Claude Code sends `rate_limits` only to subscribers, after the first API
+/// response, and drops a window once its `resets_at` has passed. `None` when
+/// neither window is there: nothing to say, the bar keeps what it had.
+pub fn usage_of(status: &Value) -> Option<Value> {
+    let limits = status.get("rate_limits")?;
+    let window = |name: &str| -> Value {
+        let w = limits.get(name);
+        let pct = w.and_then(|w| w.get("used_percentage")).and_then(Value::as_f64);
+        let resets = w.and_then(|w| w.get("resets_at")).and_then(Value::as_f64);
+        match (pct, resets) {
+            (Some(p), Some(r)) if p.is_finite() && r.is_finite() && r > 0.0 => {
+                json!({ "usedPercentage": p.clamp(0.0, 100.0), "resetsAt": r.floor() as i64 })
+            }
+            _ => Value::Null,
+        }
+    };
+    let five = window("five_hour");
+    let seven = window("seven_day");
+    if five.is_null() && seven.is_null() {
+        return None;
+    }
+    Some(json!({ "fiveHour": five, "sevenDay": seven }))
+}
+
 /// Called by the island's Allow / Deny buttons. Only ever a bare word: turning
 /// it into Claude Code's JSON is coucou-hook's job.
 pub fn answer(app: &AppHandle, request_id: &str, decision: &str) {
@@ -249,6 +292,43 @@ fn decision_word(decision: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_usage_bar_gets_the_two_windows_and_nothing_else() {
+        // The shape Claude Code 2.1.289 documents for a status line command.
+        let status = json!({
+            "session_id": "s", "cwd": "C:\\x", "model": { "display_name": "Opus" },
+            "cost": { "total_cost_usd": 1.2 },
+            "rate_limits": {
+                "five_hour": { "used_percentage": 42.5, "resets_at": 1_791_234_567 },
+                "seven_day": { "used_percentage": 18, "resets_at": 1_791_600_000.9 }
+            }
+        });
+        assert_eq!(
+            usage_of(&status).unwrap(),
+            json!({
+                "fiveHour": { "usedPercentage": 42.5, "resetsAt": 1_791_234_567 },
+                "sevenDay": { "usedPercentage": 18.0, "resetsAt": 1_791_600_000 }
+            })
+        );
+    }
+
+    #[test]
+    fn a_missing_or_odd_window_is_null_and_no_window_is_nothing() {
+        let only_week = json!({ "rate_limits": { "seven_day": { "used_percentage": 3, "resets_at": 5 } } });
+        assert_eq!(usage_of(&only_week).unwrap()["fiveHour"], Value::Null);
+        // Out of range is held to 0–100; a window without its reset time is no window.
+        let odd = json!({ "rate_limits": {
+            "five_hour": { "used_percentage": 140, "resets_at": 9 },
+            "seven_day": { "used_percentage": 10 }
+        } });
+        assert_eq!(usage_of(&odd).unwrap(), json!({ "fiveHour": { "usedPercentage": 100.0, "resetsAt": 9 }, "sevenDay": null }));
+        let text = json!({ "rate_limits": { "five_hour": { "used_percentage": "42", "resets_at": 9 } } });
+        assert_eq!(usage_of(&text), None);
+        // Not a subscriber, or before the first answer: no rate_limits at all.
+        assert_eq!(usage_of(&json!({ "session_id": "s" })), None);
+        assert_eq!(usage_of(&json!({ "rate_limits": {} })), None);
+    }
 
     #[test]
     fn only_an_explicit_allow_allows() {

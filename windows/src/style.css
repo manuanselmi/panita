@@ -194,13 +194,80 @@ body {
   transition: opacity 0.2s ease-in-out;
 }
 
+/* Out to the island's edges — #content's 8 px on top and 10 px on each side
+   are part of it — so the strip that folds and drags the island reaches the
+   top of the screen. The row itself is still 34 px, where it always was. */
 #header {
-  height: 34px;
-  flex: 0 0 34px;
+  position: relative;
+  height: 42px;
+  flex: 0 0 42px;
+  padding-top: 8px;
   display: flex;
   align-items: center;
-  margin: 0 -10px;
+  margin: -8px -10px 0;
   transition: opacity 0.2s ease-in-out;
+}
+
+/* The subscription's 5-hour usage (views/usage.ts): a hairline bar and its
+   percentage, in the dim grey of the header's icons. Amber from 80 %, red
+   from 95 %. Centred on the island, not between the tabs and the gear. */
+.usage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 10px/1 var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--dim-2);
+  white-space: nowrap;
+}
+
+.usage-label {
+  color: var(--dim-3);
+}
+
+.usage-track {
+  width: 56px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.usage-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.5);
+  transition: width 0.4s ease, background-color 0.4s ease;
+}
+
+.usage[data-level="warn"] .usage-fill {
+  background: #f5a524;
+}
+
+.usage[data-level="high"] .usage-fill {
+  background: #f4505e;
+}
+
+#header .usage {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 4px); /* the middle of the 34 px row under the 8 px of padding */
+  transform: translate(-50%, -50%);
+}
+
+#island > .usage.compact {
+  position: absolute;
+  left: 50%;
+  top: 16px; /* NOTCH_H / 2 */
+  transform: translate(-50%, -50%);
+  gap: 5px;
+  font-size: 9.5px;
+  transition: opacity 0.25s ease-in-out;
+}
+
+.usage.compact .usage-track {
+  width: 44px;
 }
 
 .tabs {

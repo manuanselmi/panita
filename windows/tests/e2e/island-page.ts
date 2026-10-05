@@ -243,6 +243,56 @@ export class IslandPage {
     })()`);
   }
 
+  /**
+   * The two usage meters — in the open island's header and in the middle of
+   * the compact island — as drawn: shown or not, their percentage, level,
+   * fill and tooltip, and where they sit against the island.
+   */
+  usageMeters(): Promise<Record<"header" | "compact", {
+    shown: boolean;
+    pct: string | null;
+    level: string | null;
+    fill: string | null;
+    title: string;
+    /** Horizontal centre minus the island's, px. */
+    offCentre: number;
+    opacity: number;
+  }>> {
+    return this.cdp.evaluate(`(() => {
+      const island = document.getElementById("island").getBoundingClientRect();
+      const read = (el) => {
+        const shown = !!el && getComputedStyle(el).display !== "none";
+        const r = el?.getBoundingClientRect();
+        return {
+          shown,
+          pct: shown ? el.querySelector(".usage-pct").textContent : null,
+          level: shown ? el.dataset.level : null,
+          fill: shown ? el.querySelector(".usage-fill").style.width : null,
+          title: el?.title ?? "",
+          offCentre: r ? Math.round((r.left + r.width / 2) - (island.left + island.width / 2)) : 0,
+          opacity: el ? Number(getComputedStyle(el).opacity) : 0,
+        };
+      };
+      return {
+        header: read(document.querySelector("#header .usage")),
+        compact: read(document.querySelector("#island > .usage.compact")),
+      };
+    })()`);
+  }
+
+  /** The open island's header strip against the island's own edges, px (0 = flush). */
+  headerEdges(): Promise<{ top: number; left: number; right: number }> {
+    return this.cdp.evaluate(`(() => {
+      const island = document.getElementById("island").getBoundingClientRect();
+      const header = document.getElementById("header").getBoundingClientRect();
+      return {
+        top: Math.round(header.top - island.top),
+        left: Math.round(header.left - island.left),
+        right: Math.round(island.right - header.right),
+      };
+    })()`);
+  }
+
   /** `element.click()` on the ↗ of the card on screen (approval card). Opens must be intercepted. */
   async clickCardOpen() {
     await this.assertOpensIntercepted("the card's ↗");
@@ -545,10 +595,11 @@ export class IslandPage {
    * Rust's drag against the real mouse button. (`element.click()` on the tab
    * would also run its own handler; the event alone tests the strip's.)
    */
-  async clickHeader(where: "strip" | "tab") {
+  async clickHeader(where: "strip" | "tab" | "usage") {
     const ok = await this.cdp.evaluate<boolean>(`(() => {
       const header = document.getElementById("header");
-      const target = ${JSON.stringify(where)} === "tab" ? header.querySelector(".tab svg") : header;
+      const where = ${JSON.stringify(where)};
+      const target = where === "tab" ? header.querySelector(".tab svg") : where === "usage" ? header.querySelector(".usage") : header;
       if (!target) return false;
       target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
       return true;

@@ -165,7 +165,11 @@ the question card about the session asking, closed by that call's
 another tool finishing, never covering an approval card) and folding over an
 approval card (`handBackApproval`: declined, the card and its timer gone, the
 session badged). `layout.test.ts` checks that only the approval and question
-cards grow, and never past the window.
+cards grow, and never past the window. `usage.test.ts` covers the usage
+meter: what the `usage` event carries, a window shown only until it resets,
+amber at 80 % and red at 95 %, whole percents, the tooltip; and `hooks.test.ts`
+that a `usage` event fills `State.usage` without touching a session and
+redraws when the 5-hour window resets.
 
 `bridge.test.ts` tests the bridge itself, with `@tauri-apps/api/core`'s
 `invoke` mocked: the command names and argument keys the Rust side expects
@@ -229,6 +233,13 @@ What it does, in order:
      the compact island, an approval card included: that request is released
      at once (empty stdout, `released without a decision` logged, no decision
      sent) and reopening shows no card; a click on a tab does not fold;
+   - **the usage meters**: none before any status line; then a status line's
+     JSON with `rate_limits` through the real relay (`coucou-hook StatusLine`) —
+     empty stdout, quick, nothing logged, no session made of it — shows 42 %
+     in the middle of the compact island (centred, with the 5-hour and weekly
+     tooltip), and in the open island's header (centred; the compact one faded
+     out); 85 % turns it amber and 97 % red; the header strip is flush with the
+     island's top and sides, and a click on the meter folds the island;
    - the same with **Deny** and its documented deny JSON;
    - a second request while a card is up → handed straight back (empty stdout,
      `decline` logged), and the first card still answers;
@@ -302,7 +313,8 @@ What it does, in order:
    - **Settings → Claude Code, Windows row** (the settings window's page, over
      CDP, still hidden): the row points into the sandbox, **Install…** shows the
      diff, **Back up and write** writes the unchanged Windows command for every
-     event, **Uninstall…** takes it out again;
+     event and the `statusLine` (the relay with `StatusLine`), **Uninstall…**
+     takes it all out again;
    - **Settings → Claude Code, VS Code terminal focus row**: it shows the fake
      `code` (checked before clicking), "Not installed"; **Install** runs
      `code --install-extension <the bundled .vsix> --force` — the fake records
@@ -328,7 +340,8 @@ What it does, in order:
      `wslpath`) and the distro and parent-PID arguments → **Back up and write**;
      the dated backup holds the original bytes, the other hook and settings are
      intact; then the installed `PreToolUse` command, read back from the file,
-     is run by a Linux shell and reaches the island; **Uninstall…** restores the
+     is run by a Linux shell and reaches the island, and so does the installed
+     `statusLine` (its usage reaches the meters); **Uninstall…** restores the
      original;
    - **an outdated WSL install**: a settings.json with every command as the
      previous version wrote it (no `--wsl-ppid`) → the row says "Installed —

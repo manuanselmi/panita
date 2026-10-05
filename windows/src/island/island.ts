@@ -20,6 +20,7 @@ import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
+import { buildUsageMeter, type UsageMeter } from "../views/usage";
 import { IslandStateMachine } from "./fsm";
 import { handBackApproval } from "./hooks";
 import { openPrimary, openSubject } from "./open";
@@ -57,6 +58,8 @@ export class Island {
   private greetingCanvas!: HTMLCanvasElement;
   private miniGrid!: HTMLElement;
   private countdown!: HTMLElement;
+  /** The 5-hour usage in the middle of the compact island (views/usage.ts). */
+  private usageMini!: UsageMeter;
   private wakeStrip!: HTMLElement;
 
   private header!: ViewHost;
@@ -186,6 +189,7 @@ export class Island {
     this.greetingCanvas = h("canvas", { id: "greeting-canvas" });
     this.miniGrid = h("div", { id: "mini-grid" });
     this.countdown = h("div", { id: "countdown" });
+    this.usageMini = buildUsageMeter("compact");
 
     this.header = buildHeader(actions);
     this.views = buildViews(actions, () => this.animateGeometry(false));
@@ -219,6 +223,7 @@ export class Island {
       this.botGlow,
       this.botCanvas,
       this.miniGrid,
+      this.usageMini.el,
       this.countdown,
     );
 
@@ -958,6 +963,11 @@ export class Island {
     // colour here, as in the overview. Four cells; past four, three and a "+N".
     const showGrid = State.mode === "compact";
     this.miniGrid.style.opacity = showGrid ? "1" : "0";
+    this.usageMini.el.style.opacity = showGrid ? "1" : "0";
+    // Invisible, it would still sit on the open island's header strip and take
+    // the press that folds or drags it.
+    this.usageMini.el.style.pointerEvents = showGrid ? "" : "none";
+    this.usageMini.sync(Date.now());
     if (showGrid) {
       const { shown, more } = State.panitaSlots(4);
       const key = shown.map((t) => `${t.id}:${t.color}`).join("|") + `|+${more}`;

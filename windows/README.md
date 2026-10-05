@@ -42,7 +42,7 @@ installs for the current user only — no admin prompt.
 | Move the mouse to the very top of the screen, where the island lives (top-centre until you move it) | Mochi peeks out |
 | Click the small island | It opens |
 | Drag the small island — or the open island by the empty strip of its header — sideways | It slides along the top edge and stays where you leave it, across restarts. Against an edge, it opens towards the middle; dragged back near the middle, it snaps to the centre |
-| Click the empty strip of the open island's header | It folds back to the small island — whatever it shows. Over a permission card, the request goes back to the terminal, which has been asking too; that session's panita keeps an amber badge until it moves on |
+| Click the empty strip of the open island's header — up to the very top of the screen, the usage meter included | It folds back to the small island — whatever it shows. Over a permission card, the request goes back to the terminal, which has been asking too; that session's panita keeps an amber badge until it moves on |
 | Click Mochi | It gets annoyed. Three times in a row and it goes dizzy |
 | Rest the pointer on Mochi for two seconds | Hearts |
 | Drag a file onto the island | Mochi turns into a box, swallows it, then offers to answer questions about it |
@@ -76,6 +76,12 @@ and fills in when it arrives; until then, or if git has no answer, it says
 A long chain wraps over up to three lines, the card growing to fit, and ends
 in "…" past that; the whole of it is in the line's tooltip.
 
+The dictionary lives in [`src/core/explain.ts`](src/core/explain.ts): an
+ordered list of rules (git, files and folders, npm/pnpm/yarn/pip/cargo/docker,
+curl/wget, processes; chains of them with `&&`, `;`, `|`), plus one line for
+the other tools (`Write`, `Edit`, `WebFetch`…). How to add a rule is written at
+the top of that file; each rule has its row in `tests/unit/explain.test.ts`.
+
 ### Questions
 
 When a session asks with `AskUserQuestion`, Claude Code puts the question up in
@@ -87,11 +93,19 @@ card instead — the first question, its options, how many more follow — with
 **Open terminal** to go and answer it. The card goes once the question is
 answered (or the turn ends).
 
-The dictionary lives in [`src/core/explain.ts`](src/core/explain.ts): an
-ordered list of rules (git, files and folders, npm/pnpm/yarn/pip/cargo/docker,
-curl/wget, processes; chains of them with `&&`, `;`, `|`), plus one line for
-the other tools (`Write`, `Edit`, `WebFetch`…). How to add a rule is written at
-the top of that file; each rule has its row in `tests/unit/explain.test.ts`.
+### Usage
+
+How much of the subscription's **5-hour limit** is used shows as a hairline bar
+and a percentage — centred in the open island's header, and in the middle of
+the small island — amber from 80 %, red from 95 %; its tooltip says when the
+window resets and how much of the weekly limit is used. Claude Code hands those
+numbers to its *status line*, not to hooks, so the install below also sets a
+`statusLine`: the same relay, which passes them to Coucou and prints nothing —
+the terminal's status line stays empty. No credential is involved: Coucou never
+asks anybody for them. They arrive once a session gets its first answer and
+refresh while sessions work; the meter is hidden until then, and once its
+window has reset. A `statusLine` of your own is never replaced — the meter then
+stays empty.
 
 ## Claude Code
 
@@ -101,7 +115,9 @@ Open **Settings… → Claude Code** and click **Install…** on the **Windows**
 You get the exact diff of what will change in
 `%USERPROFILE%\.claude\settings.json`, the path of the dated backup that will be
 taken, and nothing is written until you click. Your own hooks are never touched,
-and uninstalling removes only Coucou's entries.
+and uninstalling removes only Coucou's entries. Besides the hooks, it sets the
+`statusLine` the usage meter reads (see **Usage** above) unless you have one;
+an install from before the meter shows **Update…**.
 
 The relay is a tiny executable, `coucou-hook.exe`, copied to
 `%LOCALAPPDATA%\Coucou\bin\` at launch. It is given 300 ms to reach Coucou and

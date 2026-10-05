@@ -8,6 +8,7 @@ import { Bridge, onEvent } from "../core/bridge";
 import { explainTool, resolveFolder } from "../core/explain";
 import { promptSummary, sessionKey } from "../core/sessions";
 import { Sound } from "../core/sound";
+import { parseUsage } from "../core/usage";
 import {
   ALERT_VIEWS, State, type ApprovalInfo, type AskedQuestion, type PillBadge, type SessionTask,
 } from "../core/state";
@@ -160,6 +161,33 @@ function describeSession(payload: HookPayload) {
 
 export function registerHookHandlers(island: Island) {
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
+  void onEvent<unknown>("usage", handleUsage);
+}
+
+/** Redraws the usage bar when its 5-hour window resets (see handleUsage). */
+let usageReset: number | null = null;
+
+/**
+ * Claude Code's status line, through the relay and the app (pipe.rs): the
+ * numbers for the usage bar. Not a session event — no session is touched.
+ * When the 5-hour window resets, the bar has nothing true left to show; a
+ * single timer redraws it then, rather than leaving the old number up until
+ * the next status line.
+ */
+function handleUsage(payload: unknown) {
+  const usage = parseUsage(payload);
+  if (!usage) return;
+  State.usage = usage;
+  if (usageReset != null) window.clearTimeout(usageReset);
+  usageReset = null;
+  if (usage.fiveHour) {
+    const wait = Math.max(0, usage.fiveHour.resetsAt * 1000 - Date.now()) + 1_000;
+    usageReset = window.setTimeout(() => {
+      usageReset = null;
+      State.notify();
+    }, wait);
+  }
+  State.notify();
 }
 
 function handleHook(island: Island, payload: HookPayload) {

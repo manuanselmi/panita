@@ -12,6 +12,7 @@ import { explanationText } from "../core/explain";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
+import { buildUsageMeter } from "./usage";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 
 export interface ViewActions {
@@ -139,16 +140,21 @@ export function buildHeader(actions: ViewActions): ViewHost {
     actions.setView(v);
   }
 
+  // The subscription's 5-hour usage, centred in the strip (usage.ts).
+  const usage = buildUsageMeter("header");
+
   const el = h(
     "div",
     { id: "header" },
     h("div", { class: "tabs" }, tabHome, tabChat, tabDrop),
+    usage.el,
     h("div", { class: "header-actions" }, gearBtn, soundBtn),
   );
 
   return {
     el,
     sync() {
+      usage.sync(Date.now());
       const v = State.view;
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
       tabChat.classList.toggle("on", v === "prompt");

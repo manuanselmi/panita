@@ -429,6 +429,27 @@ describe("questionOf", () => {
   });
 });
 
+describe("usage (Claude Code's status line)", () => {
+  it("fills State.usage, touches no session, and redraws when the 5-hour window resets", async () => {
+    const { State } = await load();
+    const notify = vi.spyOn(State, "notify");
+    const handler = bridge.handlers.get("usage");
+    if (!handler) throw new Error("hooks.ts never listened for `usage`");
+    const resetsAt = Math.floor(Date.now() / 1000) + 60;
+    handler({ fiveHour: { usedPercentage: 42, resetsAt }, sevenDay: null });
+
+    expect(State.usage).toEqual({ fiveHour: { usedPercentage: 42, resetsAt }, sevenDay: null });
+    expect(State.sessions).toEqual([]);
+    expect(notify).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(61_000);
+    expect(notify).toHaveBeenCalledTimes(2);
+
+    // Nothing usable keeps what was there.
+    handler({ fiveHour: null, sevenDay: null });
+    expect(State.usage?.fiveHour?.usedPercentage).toBe(42);
+  });
+});
+
 describe("folding the island over a permission card", () => {
   it("hands the request back to the terminal, clears the card and badges the session", async () => {
     const { State, send, only, island } = await load();
