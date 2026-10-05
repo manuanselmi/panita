@@ -172,6 +172,13 @@ your first message, answers the next ones in about two seconds, and goes away
 with **+** (a new conversation) or when Coucou quits. Details and the reasons in
 `src-tauri/src/chat_cc.rs`.
 
+**Ctrl+V** of an image in the chat's field — a screenshot, an image copied from a
+page or from Explorer — saves it into the inbox (`%LOCALAPPDATA%\Coucou\inbox`,
+as `pegada-<date>-<time>.png`), shows it as the chat's chip, and sends it with
+your next message, mid-conversation or not; Claude Code reads it like a file
+dropped on the island. PNG, JPEG, GIF and WebP, up to 25 MB; anything else pastes
+as text. One image per message: a second paste before sending replaces the first.
+
 With **Anthropic API key** instead, **Settings… → Chat** takes your key. Keys
 live in the **Windows Credential Manager**, never on disk and never in the
 interface — the island can only ask whether a key exists. Same for every

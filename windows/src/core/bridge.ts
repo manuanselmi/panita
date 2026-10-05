@@ -146,6 +146,14 @@ export const Bridge = {
   chatReset: () => call<void>("chat_reset"),
   /** Copies a dropped file into the inbox. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
+  /**
+   * Saves an image pasted into the chat into the inbox. The bytes go as the
+   * raw request body (a screenshot is megabytes), the type in a header.
+   */
+  pasteImage: async (bytes: Uint8Array, type: string): Promise<DroppedFile> => {
+    if (!IS_TAURI) throw new Error("not running inside Coucou");
+    return invoke<DroppedFile>("paste_image", bytes, { headers: { "x-image-type": type } });
+  },
   /** Only ever tells you whether a key exists — never its value. */
   secretPresent: (key: string) => call<boolean>("secret_present", { key }),
   secretSet: (key: string, value: string) => callOrThrow<void>("secret_set", { key, value }),

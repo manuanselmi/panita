@@ -73,12 +73,15 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     State.notify();
     onHeightChange();
 
-    const file = State.droppedFile;
-    const context: ChatContext | null =
-      State.chatHistory.length === 1 && file ? { kind: "file", name: file.name, path: file.path } : null;
+    // A file goes with the message right after it arrived — dropped, or pasted
+    // mid-conversation — and not again (State.pendingFile).
+    const file = State.pendingFile;
+    const context: ChatContext | null = file ? { kind: "file", name: file.name, path: file.path } : null;
 
     try {
       const reply = await Bridge.chatSend(query, context);
+      // Sent: kept for a retry only while it has not gone through.
+      if (State.pendingFile === file) State.pendingFile = null;
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
       State.stateOverride = null;
       Sound.play("finish");
@@ -95,10 +98,38 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     }
   }
 
+  /**
+   * An image pasted into the field — a screenshot, an image copied from a page
+   * or from Explorer — is saved into the inbox like a dropped file (its chip
+   * shows) and goes with the next message. Anything else pastes as text.
+   */
+  async function attach(image: File) {
+    try {
+      const file = await Bridge.pasteImage(new Uint8Array(await image.arrayBuffer()), image.type);
+      State.droppedFile = { name: file.name, path: file.path };
+      State.pendingFile = State.droppedFile;
+      Sound.play("blip");
+    } catch (err) {
+      State.noteMessage = String(err).replace(/^Error:\s*/, "");
+      State.view = "note";
+      Sound.play("error");
+    }
+    State.notify();
+    input.focus();
+  }
+
+  input.addEventListener("paste", (e) => {
+    const image = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
+    if (!image || sending) return;
+    e.preventDefault();
+    void attach(image);
+  });
+
   fresh.addEventListener("click", () => {
     if (sending) return;
     State.chatHistory = [];
     State.droppedFile = null;
+    State.pendingFile = null;
     State.promptContext = null;
     void Bridge.chatReset();
     Sound.play("blip");

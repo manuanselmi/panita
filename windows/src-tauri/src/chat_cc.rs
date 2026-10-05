@@ -243,11 +243,13 @@ pub fn system_prompt(hub: &Path, dirs: &[PathBuf], hub_md: Option<&str>, user_md
     s
 }
 
-/// The user's message, with what it is about in front of the first one.
+/// The user's message, with what it is about in front: a file dropped on the
+/// island or an image pasted into the chat — on the message that comes right
+/// after it, which the island decides (it sends the context only then).
 pub fn message_text(query: &str, context: Option<&ChatContext>) -> String {
     match context {
         Some(ChatContext::File { name, path }) => {
-            format!("The user dropped a file on the island: \"{name}\", at {path}. Read it to answer.\n\n{query}")
+            format!("The user attached a file to this message: \"{name}\", at {path}. Read it to answer.\n\n{query}")
         }
         Some(ChatContext::Window { app_name, title, url }) => {
             let url = url.as_deref().map(|u| format!(", URL: {u}")).unwrap_or_default();
@@ -461,8 +463,8 @@ impl CcChat {
         // The first launch may find Claude Code already gone; one more try
         // starts it again before giving up.
         for attempt in 0..2 {
-            let (mut run, generation, first) = self.take_running(setup)?;
-            let text = message_text(query, if first { context } else { None });
+            let (mut run, generation) = self.take_running(setup)?;
+            let text = message_text(query, context);
             let outcome = run.turn(&user_line(&text));
             let mut st = self.state.lock().unwrap();
             st.busy = None;
@@ -513,13 +515,13 @@ impl CcChat {
 
     /// The running process, started if there is none, taken out of the state
     /// for the turn (so a reset can still get in), with the generation it
-    /// belongs to and whether this is the conversation's first message.
-    fn take_running(&self, setup: &Setup) -> Result<(Running, u64, bool), String> {
+    /// belongs to.
+    fn take_running(&self, setup: &Setup) -> Result<(Running, u64), String> {
         let mut st = self.state.lock().unwrap();
         if let Some(run) = st.proc.take() {
             if run.alive() {
                 st.busy = Some(run.child.clone());
-                return Ok((run, st.generation, st.answered == 0));
+                return Ok((run, st.generation));
             }
             crate::log::line(format!("chat: Claude Code had exited ({})", run.stderr_tail()));
         }
@@ -533,7 +535,7 @@ impl CcChat {
             if resume { "resuming" } else { "new conversation" }
         ));
         st.busy = Some(run.child.clone());
-        Ok((run, st.generation, st.answered == 0))
+        Ok((run, st.generation))
     }
 
     /// A new conversation: the process goes, and the next message starts
@@ -676,10 +678,10 @@ mod tests {
     }
 
     #[test]
-    fn the_first_message_says_what_it_is_about() {
+    fn a_message_with_a_file_says_what_it_is_about() {
         let file = ChatContext::File { name: "plan.pdf".into(), path: r"C:\inbox\plan.pdf".into() };
         let m = message_text("¿qué dice?", Some(&file));
-        assert!(m.starts_with("The user dropped a file on the island: \"plan.pdf\", at C:\\inbox\\plan.pdf."));
+        assert!(m.starts_with("The user attached a file to this message: \"plan.pdf\", at C:\\inbox\\plan.pdf."));
         assert!(m.ends_with("\n\n¿qué dice?"));
         assert_eq!(message_text("hola", None), "hola");
     }

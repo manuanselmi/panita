@@ -661,33 +661,44 @@ describe(`side instance "${INSTANCE}"`, () => {
       const [, id] = await waitForLog(/hook PermissionRequest id=(\S+)/, 5_000, from);
       await waitForLog(new RegExp(`hook id=${escapeRe(id)} not shown`), 5_000, from);
 
-      const card = await page.waitForView("notas's question card", (v) => v.classes.includes("question") && v.who === "notas");
-      expect(card.whoColor).toBe(seen.get("notas"));
-      expect(card.code).toBeNull();
-      expect(card.buttons).toEqual(["Open terminal", "OK"]);
-      expect(card.text).toContain(question);
-      expect(card.explain).toBe("Sí, bloquear (Recomendado) · No, que lea todo · +1 more question");
+      // Answered in the terminal: the card has nothing left to say. Sent even
+      // when a check below fails, so the card does not stay up over the next test.
+      const answer = () =>
+        runHook("PostToolUse", payloadOf(S.notas, { tool_name: "AskUserQuestion", tool_input: ask, tool_response: {} }));
+      try {
+        const card = await page.waitForView("notas's question card", (v) => v.classes.includes("question") && v.who === "notas");
+        expect(card.whoColor).toBe(seen.get("notas"));
+        expect(card.code).toBeNull();
+        expect(card.buttons).toEqual(["Open terminal", "OK"]);
+        expect(card.text).toContain(question);
+        expect(card.explain).toBe("Sí, bloquear (Recomendado) · No, que lea todo · +1 more question");
 
-      // Grown to fit the question's two lines, and laid out like the approval card.
-      const layout = await page.cardLayout("question");
-      expect(layout.titleLines).toBe(2);
-      expect(layout.explainLines).toBe(1);
-      await waitFor("the island at the question card's size", async () => (await page.settle()).height === 168 + 19);
-      await page.screenshot("1c2-question");
-      const settled = await page.cardLayout("question");
-      expect(settled.inside, JSON.stringify(settled)).toBe(true);
-      expect(settled.ordered, JSON.stringify(settled)).toBe(true);
-      expect(settled.cardHeight).toBe(168 + 19 - 8 - 34 - 10);
-      expect(Math.abs(settled.topGap - settled.bottomGap), JSON.stringify(settled)).toBeLessThanOrEqual(2);
+        // Grown to fit the question's two lines, and laid out like the approval
+        // card. Measured once the island has stopped resizing: while it is
+        // still short, the card's rows are squeezed and count fewer lines.
+        const layout = await waitFor("the island at the question card's size", async () => {
+          const box = await page.settle();
+          const l = await page.cardLayout("question");
+          const want = 168 + Math.max(0, l.titleLines - 1) * 19 + Math.max(0, l.explainLines - 1) * 15;
+          return box.width === SIZES.expanded.width && box.height === want ? l : null;
+        });
+        expect(layout.titleLines).toBe(2);
+        expect(layout.explainLines).toBe(1);
+        await page.screenshot("1c2-question");
+        const settled = await page.cardLayout("question");
+        expect(settled.inside, JSON.stringify(settled)).toBe(true);
+        expect(settled.ordered, JSON.stringify(settled)).toBe(true);
+        expect(settled.cardHeight).toBe(168 + 19 - 8 - 34 - 10);
+        expect(Math.abs(settled.topGap - settled.bottomGap), JSON.stringify(settled)).toBeLessThanOrEqual(2);
 
-      const before = (await page.opens()).length;
-      await page.click("Open terminal");
-      expect((await page.opens()).slice(before)).toEqual([
-        { cmd: "open_session", args: { cwd: S.notas.cwd, wslDistro: null, sessionId: S.notas.id } },
-      ]);
-
-      // Answered in the terminal: the card has nothing left to say.
-      await runHook("PostToolUse", payloadOf(S.notas, { tool_name: "AskUserQuestion", tool_input: ask, tool_response: {} }));
+        const before = (await page.opens()).length;
+        await page.click("Open terminal");
+        expect((await page.opens()).slice(before)).toEqual([
+          { cmd: "open_session", args: { cwd: S.notas.cwd, wslDistro: null, sessionId: S.notas.id } },
+        ]);
+      } finally {
+        await answer();
+      }
       await page.waitForView("the question card to close", (v) => !v.classes.includes("question"));
     });
 
@@ -1540,7 +1551,7 @@ describe(`side instance "${INSTANCE}"`, () => {
       expect(args).not.toContain("--session-id");
     });
 
-    it("+ starts a new conversation, with a new id; a dropped file rides along with its first message", async () => {
+    it("+ starts a new conversation, with a new id; a file goes with the message it is sent with", async () => {
       requireFake();
       const before = fakeClaudeCalls().filter((c) => c.event === "start").at(-1)!.pid;
       const clicked = await page.cdp.evaluate<boolean>(
@@ -1557,12 +1568,74 @@ describe(`side instance "${INSTANCE}"`, () => {
       expect(e.session).not.toBe(firstSession);
       expect(valueOf(startOf(e.pid).args, "--session-id")).toBe(e.session);
       const first = fakeClaudeCalls().find((c) => c.event === "message" && c.pid === e.pid)!;
-      expect(first.text).toBe(`The user dropped a file on the island: "notas.txt", at ${file}. Read it to answer.\n\n¿qué dice?`);
-      // Only the first message of a conversation carries it.
+      expect(first.text).toBe(`The user attached a file to this message: "notas.txt", at ${file}. Read it to answer.\n\n¿qué dice?`);
+      // The island sends the file once (State.pendingFile); a message without it is just the question.
       expect(fakeClaudeCalls().filter((c) => c.event === "message" && c.pid === e.pid)).toHaveLength(1);
-      const next = echo((await chat("¿y algo más?", { kind: "file", name: "notas.txt", path: file })).text);
+      const next = echo((await chat("¿y algo más?")).text);
       expect(next.turn).toBe(2);
       expect(fakeClaudeCalls().filter((c) => c.event === "message" && c.pid === e.pid).at(-1)!.text).toBe("¿y algo más?");
+    });
+
+    it("an image pasted into the chat lands in the inbox and goes with the next message only", async () => {
+      requireFake();
+      // A real `paste` event on the chat's field, carrying a PNG as the
+      // clipboard does — dispatched in the DOM, so the chat view need not be
+      // opened (opening it gives the island the keyboard). Closed, the view
+      // draws neither its chip nor its replies: the inbox and the log are
+      // what is checked.
+      const inbox = path.join(side.localDir, "inbox");
+      const pastedBefore = new Set(fs.existsSync(inbox) ? fs.readdirSync(inbox) : []);
+      const from = readSideLog().length;
+      const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52];
+      const pasted = await page.cdp.evaluate<boolean>(`(() => {
+        const input = document.querySelector(".chat-input");
+        if (!input) return false;
+        const data = new DataTransfer();
+        data.items.add(new File([new Uint8Array(${JSON.stringify(png)})], "image.png", { type: "image/png" }));
+        return !input.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+      })()`);
+      expect(pasted, "the paste was not taken over by the chat").toBe(true);
+      await waitForLog(/chat: pasted image saved \(0 KB\)/, 5_000, from);
+      const added = fs.readdirSync(inbox).filter((f) => !pastedBefore.has(f));
+      expect(added).toHaveLength(1);
+      const name = added[0];
+      expect(name).toMatch(/^pegada-\d{8}-\d{6}\.png$/);
+      const saved = path.join(inbox, name);
+      expect([...fs.readFileSync(saved)]).toEqual(png);
+
+      // Sent from the chat's own field and button, as the user would.
+      const send = (text: string) =>
+        page.cdp.evaluate(`(() => {
+          const input = document.querySelector(".chat-input");
+          input.value = ${JSON.stringify(text)};
+          document.querySelector(".send-btn").click();
+        })()`);
+      const messages = () => fakeClaudeCalls().filter((c) => c.event === "message");
+      const before = messages().length;
+      const answered = readSideLog().length;
+      await send("¿qué ves?");
+      await waitFor("the message to reach Claude Code", () => messages().length > before, 10_000);
+      const withImage = messages().at(-1)!.text ?? "";
+      const prefix = `The user attached a file to this message: "${name}", at `;
+      expect(withImage.startsWith(prefix), withImage).toBe(true);
+      expect(withImage.slice(prefix.length).split(". Read it to answer.")[0].toLowerCase()).toBe(saved.toLowerCase());
+      expect(withImage.endsWith("\n\n¿qué ves?")).toBe(true);
+
+      // Once it is answered, the next message goes without it.
+      await waitForLog(/chat: answered in \d+ ms/, 10_000, answered);
+      await send("¿y ahora?");
+      await waitFor("the second message", () => messages().length > before + 1, 10_000);
+      expect(messages().at(-1)!.text).toBe("¿y ahora?");
+    });
+
+    it("a paste with no image in it is left alone, as text", async () => {
+      const taken = await page.cdp.evaluate<boolean>(`(() => {
+        const data = new DataTransfer();
+        data.setData("text/plain", "hola");
+        return !document.querySelector(".chat-input").dispatchEvent(
+          new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+      })()`);
+      expect(taken).toBe(false);
     });
   });
 

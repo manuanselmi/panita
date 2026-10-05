@@ -415,6 +415,7 @@ export class Island {
   private swallow(path: string) {
     const name = path.split(/[\\/]/).pop() || "file";
     State.droppedFile = { name, path };
+    State.pendingFile = State.droppedFile;
     State.promptContext = { kind: "file", name, path };
     State.chatHistory = [];
     void Bridge.chatReset();
@@ -434,6 +435,9 @@ export class Island {
 
     void Bridge.ingestFile(path)
       .then((file) => {
+        // Not yet sent: the message carries the copy in the inbox, which the
+        // chat can read, rather than the original.
+        if (State.pendingFile?.path === path) State.pendingFile = { name: file.name, path: file.path };
         State.droppedFile = { name: file.name, path: file.path };
         State.promptContext = { kind: "file", name: file.name, path: file.path };
         State.notify();

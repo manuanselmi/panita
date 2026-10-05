@@ -170,8 +170,9 @@ cards grow, and never past the window.
 `bridge.test.ts` tests the bridge itself, with `@tauri-apps/api/core`'s
 `invoke` mocked: the command names and argument keys the Rust side expects
 (`openSession` → `open_session { cwd, wslDistro, sessionId }`, the optional
-hook `target`, the extension's status and install), and that a failed
-`openSession` resolves to `"failed"` rather than throwing.
+hook `target`, the extension's status and install, `pasteImage` → the raw
+bytes as `paste_image`'s body with an `x-image-type` header), and that a
+failed `openSession` resolves to `"failed"` rather than throwing.
 
 `extension.test.ts` tests the companion VS Code extension
 (`vscode-extension/`). Its pipe server, `server.ts`, imports nothing from
@@ -348,8 +349,12 @@ What it does, in order:
      same process's next turn; a failed turn is reported and the process lives
      on; a crash ("morite") is reported and the next message starts it again
      with `--resume` on the same session; the chat's "+" (a DOM click) kills it,
-     and the next message starts a new session, with the dropped file in front
-     of its first message only;
+     and the next message starts a new session, a file in front of the message
+     it is sent with and not the next one; an image **pasted** into the chat's
+     field (a DOM `paste` event carrying a PNG, the view left closed) is saved
+     in the side instance's inbox as `pegada-<date>-<time>.png`, byte for byte,
+     goes in front of the next message sent from the field and its button, and
+     not the one after; a paste with only text in it is left to the field;
    - no uncaught exception in the island.
 
    Before the hook events, with no position stored, the window is centred on

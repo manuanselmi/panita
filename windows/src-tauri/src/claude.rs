@@ -38,10 +38,6 @@ impl Chat {
         self.messages.lock().unwrap().clear();
     }
 
-    fn is_empty(&self) -> bool {
-        self.messages.lock().unwrap().is_empty()
-    }
-
     fn push(&self, message: Value) {
         self.messages.lock().unwrap().push(message);
     }
@@ -81,25 +77,24 @@ pub async fn send(
 
     let mut content: Vec<Value> = Vec::new();
 
-    // File / window context rides along with the first message only, exactly
-    // like ClaudeService.chat().
-    if chat.is_empty() {
-        match &context {
-            Some(ChatContext::File { name, path }) => {
-                if let Some(block) = file_block(path) {
-                    content.push(block);
-                }
-                content.push(json!({ "type": "text", "text": format!("File: {name}") }));
+    // File / window context rides along with the message the island sends it
+    // with: the first one after a drop, or the one after an image is pasted
+    // mid-conversation (ClaudeService.chat() on macOS only ever had the first).
+    match &context {
+        Some(ChatContext::File { name, path }) => {
+            if let Some(block) = file_block(path) {
+                content.push(block);
             }
-            Some(ChatContext::Window { app_name, title, url }) => {
-                let mut text = format!("Context — App: {app_name}, Window: {title}");
-                if let Some(url) = url {
-                    text.push_str(&format!(", URL: {url}"));
-                }
-                content.push(json!({ "type": "text", "text": text }));
-            }
-            None => {}
+            content.push(json!({ "type": "text", "text": format!("File: {name}") }));
         }
+        Some(ChatContext::Window { app_name, title, url }) => {
+            let mut text = format!("Context — App: {app_name}, Window: {title}");
+            if let Some(url) = url {
+                text.push_str(&format!(", URL: {url}"));
+            }
+            content.push(json!({ "type": "text", "text": text }));
+        }
+        None => {}
     }
     content.push(json!({ "type": "text", "text": query }));
 

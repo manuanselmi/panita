@@ -397,6 +397,21 @@ fn ingest_file(path: String) -> Result<DroppedFile, String> {
     files::ingest(&path)
 }
 
+/// An image pasted into the chat, saved into the inbox like a dropped file.
+/// The bytes come as the raw request body — a screenshot is megabytes, which
+/// as a JSON array of numbers would be several times that — and the clipboard's
+/// type for them in the `x-image-type` header.
+#[tauri::command]
+fn paste_image(request: tauri::ipc::Request<'_>) -> Result<DroppedFile, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("No image came with the paste.".into());
+    };
+    let mime = request.headers().get("x-image-type").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let file = files::save_pasted(bytes, mime)?;
+    log::line(format!("chat: pasted image saved ({} KB)", file.size / 1024));
+    Ok(file)
+}
+
 /// The island may only ask whether a key exists — never read it.
 #[tauri::command]
 fn secret_present(key: String) -> bool {
@@ -569,6 +584,7 @@ pub fn run() {
             chat_reset,
             chat_status,
             ingest_file,
+            paste_image,
             secret_present,
             secret_set,
             secret_clear,

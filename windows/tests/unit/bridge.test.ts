@@ -98,3 +98,25 @@ describe("hook targets", () => {
     await expect(Bridge.hooksApply(true, "f", "windows")).rejects.toBe("settings.json isn't valid JSON");
   });
 });
+
+describe("pasteImage", () => {
+  it("sends the image's bytes as the raw body of paste_image, its type in a header", async () => {
+    const Bridge = await load(true);
+    const saved = { name: "pegada-20261005-134512.png", path: String.raw`C:\inbox\pegada-20261005-134512.png`, size: 4 };
+    invoke.mockResolvedValue(saved);
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    expect(await Bridge.pasteImage(bytes, "image/png")).toEqual(saved);
+    expect(invoke).toHaveBeenCalledWith("paste_image", bytes, { headers: { "x-image-type": "image/png" } });
+  });
+
+  it("throws what Rust refused, and throws outside Coucou without calling anything", async () => {
+    const Bridge = await load(true);
+    invoke.mockRejectedValue("Only PNG, JPEG, GIF and WebP images can be pasted.");
+    await expect(Bridge.pasteImage(new Uint8Array([1]), "image/svg+xml")).rejects.toBe(
+      "Only PNG, JPEG, GIF and WebP images can be pasted.",
+    );
+    const outside = await load(false);
+    await expect(outside.pasteImage(new Uint8Array([1]), "image/png")).rejects.toThrow("not running inside Coucou");
+    expect(invoke).not.toHaveBeenCalled();
+  });
+});

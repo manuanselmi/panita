@@ -252,7 +252,14 @@ class AppState {
   fileDragOver = false;
 
   promptContext: PromptContext | null = null;
+  /** The file the chat is about: the last one dropped on the island or pasted into the chat (its chip). */
   droppedFile: { name: string; path: string } | null = null;
+  /**
+   * A file the next chat message carries, then null: a dropped file until the
+   * conversation's first message, an image pasted into the chat until the
+   * message after it.
+   */
+  pendingFile: { name: string; path: string } | null = null;
   noteMessage: string | null = null;
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
