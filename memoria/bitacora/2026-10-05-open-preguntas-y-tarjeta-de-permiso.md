@@ -75,6 +75,22 @@ los renglones antes de que la isla terminara de crecer, y con la isla baja el fl
 filas. Había pasado antes por timing. Ahora espera el tamaño final, y contesta la pregunta en un
 `finally` para no dejar la tarjeta arriba si algo falla.
 
+### 5. Barra de uso de 5 horas (D-020)
+
+Manuel pidió ver el uso de 5 horas en la franja del header, y también con la isla compacta. Para
+no tocar credenciales se buscó en el binario de Claude Code de dónde sacarlo: lo da la status
+line. Se presentaron tres opciones y Manuel eligió la status line. Rama `usage-bar`: el
+instalador escribe `statusLine` = el relay con `StatusLine` (sin imprimir nada); `pipe.rs` se
+queda con las dos ventanas y emite `usage`; dos medidores (header y compacta). De paso, la franja
+del header llega hasta el borde de arriba. Antes no había `statusLine` ni en Windows ni en WSL
+(se miró, solo lectura).
+
+El e2e encontró un bug real en la primera corrida: sin datos, el medidor quedaba visible (una
+barra vacía), porque el primer `sync` salía antes de ocultarlo. En esa corrida también falló una
+vez "a bare git push…", sin relación aparente (O8). Segunda corrida: 73 en verde y 1 salteado;
+Rust y vitest 472 en verde. Capturas mirando la compacta (`04c`), el header (`04d`) y el ámbar
+(`04e`).
+
 ## Qué se aprendió
 
 - `[CONFIRMADO]` (leyendo `workbench.desktop.main.js` de VS Code 1.140): VS Code agrega
@@ -111,7 +127,10 @@ filas. Había pasado antes por timing. Ahora espera el tamaño final, y contesta
 
 - Probar a mano en la app instalada: "↗" en KairoWeb con un archivo untracked o modificado
   activo; una pregunta real de Claude; el click en el header sobre un permiso (que la terminal
-  siga preguntando); un doble click que no reabra la isla. Nada de esto se vio todavía.
+  siga preguntando); un doble click que no reabra la isla; un `Ctrl+V` real de una captura y que
+  el Claude Code real la lea; la barra de uso con datos reales.
+- Para la barra de uso, Manuel tiene que aplicar **Update…** en Settings → Claude Code, en la
+  fila de Windows y en la de WSL (agrega la `statusLine`, viendo el diff).
 - La rama `chat-deny` (de la otra sesión) quedó vieja: su commit ya está en `main` como
   `f5e00a8`. No se vuelve a mergear; esa sesión tiene que pasarse a `main`.
 - Preguntas nuevas: I5 (contestar la pregunta desde la isla) y O7 (sacar la tarjeta de permiso

@@ -93,6 +93,15 @@ click. Dos señales posibles, sin probar: el `PostToolUse` de la misma herramien
 `tool_input` (si se aprobó), o que Claude Code mate al relay al ganar el diálogo y el pipe se
 cierre `[SUPUESTO]`. Desbloquea: que la tarjeta no mienta después de contestar en la terminal.
 
+### O8. El e2e "a bare git push names the session's own branch" falló una vez
+El 2026-10-05, en la rama `usage-bar`, el relay de ese test devolvió stdout vacío al **Deny** (la
+respuesta de Coucou no llegó); pasó en las cinco corridas anteriores y en la siguiente, sin
+cambios en ese camino. `[SUPUESTO]`: la isla no alcanzó a confirmar la tarjeta en los 800 ms del
+ack (pipe.rs) — el relay sale vacío y la tarjeta aparece tarde, como en el test de la isla
+colgada. Además, `ask()` hace el Deny en un `finally`, así que si algo del `try` falló antes, ese
+error queda tapado por el del Deny. Desbloquea: confiar en un rojo de esa suite; si se repite,
+leer el log de la instancia lateral antes de que el suite lo borre.
+
 ## 🔵 Del producto
 
 ### N1. ¿Se publica algún día?

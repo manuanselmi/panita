@@ -527,3 +527,42 @@ stream-json`, y probarlo gasta la suscripción. Si pegar resulta lento, es el si
 **Consecuencias.** Una imagen por mensaje: un segundo pegado antes de mandar reemplaza al
 primero. La imagen pasa por las reglas de lectura de D-017 como cualquier archivo del inbox (un
 nombre `pegada-…` no las toca). El inbox se barre a la semana, como siempre.
+
+---
+
+## D-020 — El uso de 5 horas llega por la status line de Claude Code y se ve en la isla
+
+**Fecha:** 2026-10-05 · **Estado:** vigente
+
+**Contexto.** Manuel quiere ver el uso del límite de 5 horas de la suscripción en la isla:
+arriba, en la franja del header, y también con la isla compacta. La regla 6 de `CLAUDE.md`
+prohíbe que la app use las credenciales de la suscripción, así que no se puede preguntar a la API
+de uso de Anthropic. Dato nuevo `[CONFIRMADO]` leyendo el binario de Claude Code 2.1.289: el JSON
+que Claude Code le pasa a un comando de **status line** trae `rate_limits.five_hour` y
+`rate_limits.seven_day` (`used_percentage`, `resets_at`) — solo a suscriptores, después de la
+primera respuesta de la API, y solo mientras la ventana no se reinició. Los hooks no lo reciben.
+
+**Decisión** (Manuel eligió la opción 1 de tres):
+- El mismo flujo de instalación (backup, diff, click) escribe una `statusLine` en
+  `~/.claude/settings.json` de Windows y de cada distro: `coucou-hook StatusLine`. El relay la
+  reenvía como un evento más y **no imprime nada**, así que la terminal no muestra status line
+  (Manuel no eligió; se tomó el default más discreto y se cambia en una línea).
+- La app (`pipe.rs`, `usage_of`) se queda solo con las dos ventanas y le manda a la isla un evento
+  `usage`; no lo loguea (llega cada pocos segundos) y no crea ni toca sesiones.
+- La isla muestra una barra finita y el porcentaje del límite de 5 horas: centrada en la franja
+  del header con la isla abierta, y en el centro de la isla compacta. Ámbar desde 80 %, rojo
+  desde 95 %; el tooltip dice a qué hora se reinicia y el uso semanal. Oculta hasta el primer
+  dato y cuando la ventana se reinicia.
+- Una `statusLine` ajena no se reemplaza nunca (hay una sola por archivo): la barra queda vacía.
+- Junto con esto, la franja del header llega al borde de arriba de la pantalla (y a los lados):
+  los 8 px de padding de arriba ahora son parte del header.
+
+**Descartadas.**
+- *Leerlo de la salida del chat de la isla* (el `claude` del chat emite eventos de rate limit):
+  no toca nada, pero solo se actualiza cuando se chatea desde la isla; casi siempre estaría viejo.
+- *Preguntarle a la API de uso con el token de la suscripción*: prohibido por la regla 6.
+
+**Consecuencias.** Las instalaciones de antes se ven como **Update…** en Settings, porque les
+falta la `statusLine`. Si una versión futura de Claude Code deja de pasar `rate_limits` a la
+status line, la barra se queda oculta sin que nada falle. Con la isla oculta no se gasta CPU: un
+solo timer al reinicio de la ventana redibuja la barra.
