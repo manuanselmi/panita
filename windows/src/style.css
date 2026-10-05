@@ -728,16 +728,45 @@ body {
   user-select: text;
 }
 
-/* Under the approval card's command: what it does, in a line of Spanish
-   (src/core/explain.ts). Destructive parts in red, with one ⚠ up front. */
+/* Under the approval card's command: what it does, in Spanish
+   (src/core/explain.ts). Destructive parts in red, with one ⚠ up front. Up to
+   three lines — the island grows to fit them (views.ts) — then "…". The
+   question card's options use the same row, up to two. */
 .explain {
   margin-top: -1px;
   padding: 0 2px;
   font: 400 11.5px/15px var(--font);
   color: #b9bdc4;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
   overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+}
+
+.question .explain {
+  -webkit-line-clamp: 2;
+}
+
+.question .title {
+  line-height: 19px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* A hidden copy of a card's text row at the open island's width, to count the
+   lines it needs (views.ts, `sizer`). Out of the flow, never clamped. */
+.sizer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+  display: block !important;
+  -webkit-line-clamp: none !important;
 }
 
 .explain .sep {

@@ -8,7 +8,9 @@ import { Bridge, onEvent } from "../core/bridge";
 import { explainTool, resolveFolder } from "../core/explain";
 import { promptSummary, sessionKey } from "../core/sessions";
 import { Sound } from "../core/sound";
-import { State, type ApprovalInfo, type PillBadge, type SessionTask } from "../core/state";
+import {
+  ALERT_VIEWS, State, type ApprovalInfo, type AskedQuestion, type PillBadge, type SessionTask,
+} from "../core/state";
 import type { IslandViewName } from "../core/layout";
 import type { Island } from "./island";
 
@@ -72,6 +74,7 @@ const TOOL_LABELS: Record<string, string> = {
   MultiEdit: "Edita",
   NotebookEdit: "Notebook",
   PowerShell: "Ejecuta",
+  AskUserQuestion: "Pregunta",
 };
 
 function stepLabel(tool: string, input: Record<string, unknown>): string {
@@ -85,7 +88,34 @@ function stepLabel(tool: string, input: Record<string, unknown>): string {
   if (file) return `${label} · ${lastPathComponent(file)}`;
   const query = str("query");
   if (query) return `${label} · ${query.slice(0, 40)}`;
+  const question = questionOf(tool, input);
+  if (question) return `${label} · ${question.text.slice(0, 40)}`;
   return label;
+}
+
+/** The tool Claude Code asks the user a multiple-choice question with. */
+const ASK_TOOL = "AskUserQuestion";
+
+/**
+ * What an AskUserQuestion call asks: its first question, that question's
+ * option labels, and how many questions follow. Null for any other tool, or
+ * an input without a question in it. The input is
+ * `{ questions: [{ question, header, options: [{ label, description }], multiSelect }] }`.
+ */
+export function questionOf(tool: string, input: Record<string, unknown>): AskedQuestion | null {
+  if (tool !== ASK_TOOL || !Array.isArray(input.questions)) return null;
+  const questions = input.questions.filter(
+    (q): q is { question: string; options?: unknown } =>
+      !!q && typeof q === "object" && typeof (q as { question?: unknown }).question === "string" &&
+      !!(q as { question: string }).question.trim(),
+  );
+  const first = questions[0];
+  if (!first) return null;
+  const options = (Array.isArray(first.options) ? first.options : [])
+    .map((o) => (o && typeof o === "object" ? (o as { label?: unknown }).label : null))
+    .filter((label): label is string => typeof label === "string" && !!label.trim())
+    .map((label) => label.trim());
+  return { text: first.question.trim(), options, more: questions.length - 1 };
 }
 
 /**
@@ -166,7 +196,7 @@ function handleHook(island: Island, payload: HookPayload) {
   const alertAbout = (s: SessionTask, view: IslandViewName, badge: PillBadge) => {
     const otherCardUp =
       State.mode === "expanded" &&
-      (State.view === "finished" || State.view === "error") &&
+      ALERT_VIEWS.has(State.view) &&
       State.alertTask != null &&
       State.alertTask !== s;
     if (State.pendingApproval || State.focusId || otherCardUp) {
@@ -186,6 +216,23 @@ function handleHook(island: Island, payload: HookPayload) {
     return;
   }
 
+  if (name === "PermissionRequest" && payload.tool_name === ASK_TOOL) {
+    // AskUserQuestion is not a permission. Claude Code puts the question up in
+    // the terminal while it asks the hook — the two race — and an "allow"
+    // without the user's answers is not an answer: all the old approval card
+    // could do was deny the question outright. So the request goes straight
+    // back, nothing waits on the island, and the question card says what is
+    // being asked, with a way to the terminal that has it.
+    if (payload.request_id) void Bridge.approvalDecline(payload.request_id);
+    const s = State.sessionEvent(event, now);
+    s.state = "question";
+    s.question = questionOf(ASK_TOOL, payload.tool_input ?? {});
+    Sound.play("question");
+    alertAbout(s, "question", "approval");
+    State.notify();
+    return;
+  }
+
   if (name === "PermissionRequest") {
     handlePermission(island, payload, event, now);
     State.notify();
@@ -194,8 +241,17 @@ function handleHook(island: Island, payload: HookPayload) {
 
   const s = State.sessionEvent(event, now);
   // A session that was asking in its terminal (a declined second request, see
-  // handlePermission) has been answered once it does anything but notify.
+  // handlePermission, or a question) has been answered once it does anything
+  // but notify.
   if (s.pillBadge === "approval" && name !== "Notification") s.pillBadge = null;
+  // Its question was answered in the terminal, or the turn moved past it: the
+  // card about it has nothing left to say.
+  if (s.question && questionSettled(name, payload)) {
+    s.question = null;
+    if (State.mode === "expanded" && State.view === "question" && State.alertTask === s) {
+      island.setView(State.defaultView());
+    }
+  }
 
   switch (name) {
     case "SessionStart":
@@ -274,6 +330,50 @@ function handleHook(island: Island, payload: HookPayload) {
       break;
   }
   State.notify();
+}
+
+/**
+ * Whether event `name` means a session's pending question is behind it: the
+ * AskUserQuestion call itself has finished (answered, or rejected with Esc), or
+ * the turn has. Not just any tool finishing — a subagent of the same session
+ * may keep working while the question waits.
+ */
+function questionSettled(name: string, payload: HookPayload): boolean {
+  switch (name) {
+    case "PostToolUse":
+    case "PostToolUseFailure":
+      return payload.tool_name === ASK_TOOL;
+    case "UserPromptSubmit":
+    case "Stop":
+    case "StopFailure":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * The user folded the island over a permission card. The request goes back to
+ * the terminal — which has been asking too since it came in — so nothing is
+ * left waiting on a card nobody can see, and the asking session's panita
+ * keeps an amber badge until it moves on. False when no request was up.
+ */
+export function handBackApproval(): boolean {
+  const req = State.pendingApproval;
+  if (!req) return false;
+  void Bridge.log(`fold: request ${req.requestId || "(no id)"} back to the terminal`);
+  if (req.requestId) void Bridge.approvalDecline(req.requestId);
+  if (pendingTimeout != null) {
+    window.clearTimeout(pendingTimeout);
+    pendingTimeout = null;
+  }
+  State.pendingApproval = null;
+  State.isPinned = false;
+  req.session.pillBadge = "approval";
+  // No longer held first; the usual order (and its dwell) applies again.
+  State.reorderSessions();
+  State.notify();
+  return true;
 }
 
 function handlePermission(

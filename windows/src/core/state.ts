@@ -53,6 +53,21 @@ export interface SessionTask extends AgentTask {
   ordinal: number;
   /** The first prompt the island saw from it, one line, ~80 characters (its tooltip). */
   firstPrompt: string | null;
+  /**
+   * What it is asking with AskUserQuestion, while it waits for the answer in
+   * its terminal: what the question card shows. Gone once it is answered.
+   */
+  question?: AskedQuestion | null;
+}
+
+/** An AskUserQuestion call, as the question card shows it. */
+export interface AskedQuestion {
+  /** The first question. */
+  text: string;
+  /** Its options' labels, in order. */
+  options: string[];
+  /** How many more questions come after it in the same call. */
+  more: number;
 }
 
 export const isSession = (t: AgentTask | null | undefined): t is SessionTask =>
@@ -103,6 +118,9 @@ export interface SearchResult {
   items: ResultItem[];
   note?: string;
 }
+
+/** Cards about one session, which name it through `alertTask`. */
+export const ALERT_VIEWS: ReadonlySet<IslandViewName> = new Set<IslandViewName>(["finished", "error", "question"]);
 
 const task = (
   id: string, name: string, color: string, source: AgentSource,
@@ -211,7 +229,10 @@ class AppState {
    * sessions lead.
    */
   focusId: string | null = null;
-  /** The session the finished / error card is about. Held for the same reason as ApprovalInfo.session. */
+  /**
+   * The session the finished, error or question card is about (ALERT_VIEWS).
+   * Held for the same reason as ApprovalInfo.session.
+   */
   alertTask: SessionTask | null = null;
 
   stateOverride: BotStateName | null = null;
@@ -236,6 +257,12 @@ class AppState {
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
+  /**
+   * How much taller than its VIEW_LAYOUTS height a card is drawn, px, by view:
+   * the approval card when its explanation needs a second or third line, the
+   * question card when its question or options do (views.ts measures them).
+   */
+  cardGrowth: Partial<Record<IslandViewName, number>> = {};
 
   integrations: Record<string, IntegrationInfo> = {};
 
@@ -299,7 +326,7 @@ class AppState {
    */
   get subjectTask(): AgentTask | null {
     if (this.view === "approval" && this.pendingApproval) return this.pendingApproval.session;
-    if ((this.view === "finished" || this.view === "error") && this.alertTask) return this.alertTask;
+    if (ALERT_VIEWS.has(this.view) && this.alertTask) return this.alertTask;
     return this.focusTask;
   }
 

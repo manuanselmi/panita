@@ -85,7 +85,10 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   // command, the explanation, the buttons — touched each other and the card's
   // edges.
   approval: { height: 176, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
-  question: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
+  // 8 px taller than the plain cards for its four rows — who, the question,
+  // its options, the buttons — and more when the question or the options wrap
+  // (State.cardGrowth).
+  question: { height: 168, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },
   error: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   finished: { height: 160, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   confused: { height: 160, botX: 76, botY: null, botDiameter: 66, agentMode: "column" },
@@ -155,10 +158,31 @@ export function chatPromptHeight(messageCount: number): number {
   return Math.min(300, 240 + messageCount * 40);
 }
 
+/**
+ * Width, px, of a text row in the approval and question cards once the island
+ * is fully open: EXPANDED_W less #content's side padding (10 + 10, style.css),
+ * the card's border (1 + 1) and the stack's padding (116 + 16, views.ts).
+ * The cards measure how many lines their text takes at this width — not at the
+ * width on screen, which is narrower while the island springs open. The e2e
+ * suite checks a real row against it.
+ */
+export const CARD_TEXT_W = EXPANDED_W - 20 - 2 - 116 - 16;
+
+/** Line height, px, of the approval card's explanation and the question card's options (style.css `.explain`). */
+export const EXPLAIN_LINE_H = 15;
+
+/** Views whose card may grow past its VIEW_LAYOUTS height to fit a few more lines of text. */
+const GROWING_VIEWS: ReadonlySet<IslandViewName> = new Set<IslandViewName>(["approval", "question"]);
+
+/**
+ * The island's size. `growth`: px a growing card (approval, question) asks for
+ * on top of its VIEW_LAYOUTS height; ignored for every other view.
+ */
 export function islandSize(
   mode: IslandMode,
   view: IslandViewName,
   chatCount = 0,
+  growth = 0,
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -168,8 +192,10 @@ export function islandSize(
     case "compact":
       return { w: COMPACT_W, h: NOTCH_H };
     case "expanded": {
-      const h = view === "prompt" ? chatPromptHeight(chatCount) : VIEW_LAYOUTS[view].height;
-      return { w: EXPANDED_W, h };
+      if (view === "prompt") return { w: EXPANDED_W, h: chatPromptHeight(chatCount) };
+      const extra = GROWING_VIEWS.has(view) ? Math.max(0, growth) : 0;
+      // Never past the window: the panel is all the room there is.
+      return { w: EXPANDED_W, h: Math.min(PANEL_H, VIEW_LAYOUTS[view].height + extra) };
     }
   }
 }

@@ -26,6 +26,27 @@ export interface ActiveView {
   explainWarn: boolean;
 }
 
+/** The approval or question card's rows, as laid out on screen (IslandPage.cardLayout). */
+export interface CardLayout {
+  inside: boolean;
+  ordered: boolean;
+  cardHeight: number;
+  /** Space between the card's top edge and the first row, and between the last row and its bottom edge. */
+  topGap: number;
+  bottomGap: number;
+  rows: { top: number; height: number }[];
+  /** Lines the explanation (approval) or the options (question) take on screen; 0 when not shown. */
+  explainLines: number;
+  /** Its text is cut short: more of it than the lines on screen hold. */
+  explainClamped: boolean;
+  /** Its width on screen, px. */
+  explainWidth: number;
+  /** Lines the question takes (question card), 0 otherwise. */
+  titleLines: number;
+  /** The ↗ (approval card), or null without one: inside the card, clear of every row's text. */
+  jump: { inside: boolean; clear: boolean } | null;
+}
+
 /**
  * How a label ("struxto-especificador 2") fits its box: its number must stay
  * inside it however long the name, and only the name part may be cut.
@@ -177,35 +198,61 @@ export class IslandPage {
     })()`);
   }
 
-  /** The approval card's layout: the explanation line sits between the command and the buttons, inside the card. */
-  approvalLayout(): Promise<{
-    inside: boolean;
-    ordered: boolean;
-    explainOverflows: boolean;
-    cardHeight: number;
-    /** Space between the card's top edge and the first row, and between the last row and its bottom edge. */
-    topGap: number;
-    bottomGap: number;
-    rows: { top: number; height: number }[];
-  }> {
+  /**
+   * The approval or question card's layout: its rows — who, the command or the
+   * question, the explanation or the options, the buttons — in order, inside
+   * the card; and how the text row under the first one wraps.
+   */
+  cardLayout(view: "approval" | "question" = "approval"): Promise<CardLayout> {
     return this.cdp.evaluate(`(() => {
-      const view = document.querySelector("#views > .view.approval");
+      const view = document.querySelector("#views > .view.${view}");
       const card = view.querySelector(".card").getBoundingClientRect();
-      const rows = [".who-row", ".code", ".explain", ".actions"]
-        .map((s) => view.querySelector(s))
-        .filter((el) => el && getComputedStyle(el).display !== "none")
-        .map((el) => el.getBoundingClientRect());
-      const explain = view.querySelector(".explain");
+      const shown = (el) => el && getComputedStyle(el).display !== "none";
+      const selectors = ${JSON.stringify(view)} === "approval"
+        ? [".who-row", ".code", ".explain", ".actions"]
+        : [".who-row", ".title", ".explain", ".actions"];
+      const els = selectors.map((s) => view.querySelector(s + ":not(.sizer)")).filter(shown);
+      const rows = els.map((el) => el.getBoundingClientRect());
+      const explain = view.querySelector(".explain:not(.sizer)");
+      const title = view.querySelector(".title:not(.sizer)");
+      const jumpEl = view.querySelector(".jump");
+      const j = jumpEl ? jumpEl.getBoundingClientRect() : null;
+      const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+      // Text runs, not row boxes: a row is as wide as the card, its words are not.
+      const textRects = els.flatMap((el) => {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        return [...range.getClientRects()];
+      });
       return {
         inside: rows.every((r) => r.top >= card.top - 0.5 && r.bottom <= card.bottom + 0.5 && r.right <= card.right + 0.5),
         ordered: rows.every((r, i) => i === 0 || r.top >= rows[i - 1].bottom - 0.5),
-        explainOverflows: explain.scrollWidth > explain.clientWidth + 0.5,
         cardHeight: Math.round(card.height),
         topGap: Math.round(rows[0].top - card.top),
         bottomGap: Math.round(card.bottom - rows.at(-1).bottom),
         rows: rows.map((r) => ({ top: Math.round(r.top - card.top), height: Math.round(r.height) })),
+        explainLines: shown(explain) ? Math.round(explain.clientHeight / 15) : 0,
+        explainClamped: !!(shown(explain) && explain.scrollHeight > explain.clientHeight + 0.5),
+        explainWidth: shown(explain) ? Math.round(explain.getBoundingClientRect().width) : 0,
+        titleLines: ${JSON.stringify(view)} === "question" && shown(title) ? Math.round(title.clientHeight / 19) : 0,
+        jump: j ? {
+          inside: j.top >= card.top && j.bottom <= card.bottom && j.left >= card.left && j.right <= card.right,
+          clear: textRects.every((r) => !overlaps(r, j)),
+        } : null,
       };
     })()`);
+  }
+
+  /** `element.click()` on the ↗ of the card on screen (approval card). Opens must be intercepted. */
+  async clickCardOpen() {
+    await this.assertOpensIntercepted("the card's ↗");
+    const clicked = await this.cdp.evaluate<boolean>(`(() => {
+      const button = document.querySelector("#views > .view.on .jump");
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`);
+    if (!clicked) throw new Error("no ↗ on the card on screen");
   }
 
   /** The overview's cards, read from the DOM whether or not the island is open. */
@@ -493,19 +540,20 @@ export class IslandPage {
   }
 
   /**
-   * A `dblclick` on the open island's header: on the empty strip, or on the
-   * Home tab. Only the dblclick event itself — no mousedown, which would arm
-   * Rust's drag against the real mouse button.
+   * A `click` on the open island's header: on the empty strip, or on the Home
+   * tab's icon. Only the click event itself — no mousedown, which would arm
+   * Rust's drag against the real mouse button. (`element.click()` on the tab
+   * would also run its own handler; the event alone tests the strip's.)
    */
-  async dblclickHeader(where: "strip" | "tab") {
+  async clickHeader(where: "strip" | "tab") {
     const ok = await this.cdp.evaluate<boolean>(`(() => {
       const header = document.getElementById("header");
-      const target = ${JSON.stringify(where)} === "tab" ? header.querySelector(".tab") : header;
+      const target = ${JSON.stringify(where)} === "tab" ? header.querySelector(".tab svg") : header;
       if (!target) return false;
-      target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 }));
+      target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
       return true;
     })()`);
-    if (!ok) throw new Error(`no header ${where} to double-click`);
+    if (!ok) throw new Error(`no header ${where} to click`);
   }
 
   greetingVisible(): Promise<boolean> {

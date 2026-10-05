@@ -3,7 +3,29 @@
 // turns that into the island's left edge for whatever width it has right now.
 
 import { describe, expect, it } from "vitest";
-import { COMPACT_W, EXPANDED_W, NOTCH_W, PANEL_W, islandLeft } from "../../src/core/layout";
+import {
+  COMPACT_W, EXPANDED_W, NOTCH_H, NOTCH_W, PANEL_H, PANEL_W, VIEW_LAYOUTS, islandLeft, islandSize,
+} from "../../src/core/layout";
+
+describe("islandSize: cards that grow with their text", () => {
+  it("the approval and question cards add what they ask for", () => {
+    expect(islandSize("expanded", "approval", 0, 30)).toEqual({ w: EXPANDED_W, h: VIEW_LAYOUTS.approval.height + 30 });
+    expect(islandSize("expanded", "question", 0, 19)).toEqual({ w: EXPANDED_W, h: VIEW_LAYOUTS.question.height + 19 });
+    expect(islandSize("expanded", "approval")).toEqual({ w: EXPANDED_W, h: VIEW_LAYOUTS.approval.height });
+  });
+
+  it("no other view grows, and nothing grows while the island is closed", () => {
+    expect(islandSize("expanded", "overview", 0, 30).h).toBe(VIEW_LAYOUTS.overview.height);
+    expect(islandSize("expanded", "finished", 0, 30).h).toBe(VIEW_LAYOUTS.finished.height);
+    expect(islandSize("compact", "approval", 0, 30)).toEqual({ w: COMPACT_W, h: NOTCH_H });
+    expect(islandSize("hidden", "approval", 0, 30).h).toBe(0);
+  });
+
+  it("never past the window, and never smaller than the card", () => {
+    expect(islandSize("expanded", "approval", 0, 1_000).h).toBe(PANEL_H);
+    expect(islandSize("expanded", "approval", 0, -20).h).toBe(VIEW_LAYOUTS.approval.height);
+  });
+});
 
 describe("islandLeft", () => {
   it("centred in the panel, as before the island could move", () => {

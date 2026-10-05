@@ -309,6 +309,165 @@ describe("PermissionRequest", () => {
   });
 });
 
+/** An AskUserQuestion call, as Claude Code sends it. */
+const ASK = {
+  questions: [
+    {
+      question: "¿Le bloqueo al chat la lectura de secretos?",
+      header: "Seguridad",
+      multiSelect: false,
+      options: [
+        { label: "Sí, bloquear (Recomendado)", description: "Reglas de denegación" },
+        { label: "No", description: "Que lea todo" },
+      ],
+    },
+    { question: "¿Dónde vive el mapa?", header: "Mapa", multiSelect: false, options: [{ label: "CLAUDE.md", description: "" }] },
+  ],
+};
+
+describe("AskUserQuestion", () => {
+  it("is handed straight back — no ack, no approval card — and the question card says what is asked", async () => {
+    const { State, Sound, send, only, island } = await load();
+    send(permission("q-1", "AskUserQuestion", ASK));
+
+    // The terminal already shows it, and an island "allow" would not answer it.
+    expect(bridge.Bridge.approvalDecline).toHaveBeenCalledExactlyOnceWith("q-1");
+    expect(bridge.Bridge.approvalAck).not.toHaveBeenCalled();
+    expect(State.pendingApproval).toBeNull();
+    expect(State.isPinned).toBe(false);
+
+    expect(only().state).toBe("question");
+    expect(only().question).toEqual({
+      text: "¿Le bloqueo al chat la lectura de secretos?",
+      options: ["Sí, bloquear (Recomendado)", "No"],
+      more: 1,
+    });
+    expect(island.alert).toHaveBeenCalledExactlyOnceWith("question");
+    expect(State.view).toBe("question");
+    expect(State.alertTask).toBe(only());
+    expect(State.subjectTask).toBe(only());
+    expect(Sound.play).toHaveBeenCalledWith("question");
+  });
+
+  it("Open terminal on the question card opens the session asking, not the one leading", async () => {
+    const { State, send, open } = await load();
+    send(permission("q-1", "AskUserQuestion", ASK, from("a", "alpha")));
+    send(work("b", "beta", "build"));
+    vi.advanceTimersByTime(5_000);
+    send(work("b", "beta", "build again"));
+    expect(State.focusTask?.name).toBe("beta");
+    open.openSubject();
+    expect(bridge.Bridge.openSession).toHaveBeenCalledExactlyOnceWith(String.raw`C:\Users\dev\projects\alpha`, null, "a");
+  });
+
+  it("the card goes once the question is answered — not when another tool of the session finishes", async () => {
+    const { State, send, named, island } = await load();
+    send(permission("q-1", "AskUserQuestion", ASK, from("a", "alpha")));
+    // A subagent keeps working while the question waits; the terminal notifies.
+    send(from("a", "alpha", { hook_event_name: "PostToolUse", tool_name: "Bash" }));
+    send(from("a", "alpha", { hook_event_name: "Notification", message: "Claude is waiting for your input" }));
+    expect(named("alpha").question).not.toBeNull();
+    expect(island.setView).not.toHaveBeenCalled();
+
+    send(from("a", "alpha", { hook_event_name: "PostToolUse", tool_name: "AskUserQuestion" }));
+    expect(named("alpha").question).toBeNull();
+    expect(island.setView).toHaveBeenCalledExactlyOnceWith("overview");
+    expect(named("alpha").state).toBe("working");
+    expect(State.view).toBe("overview");
+  });
+
+  it("a question rejected with Esc, or a turn that ends, clears it too", async () => {
+    const { send, named } = await load();
+    send(permission("q-1", "AskUserQuestion", ASK, from("a", "alpha")));
+    send(from("a", "alpha", { hook_event_name: "PostToolUseFailure", tool_name: "AskUserQuestion" }));
+    expect(named("alpha").question).toBeNull();
+
+    send(permission("q-2", "AskUserQuestion", ASK, from("a", "alpha")));
+    send(from("a", "alpha", { hook_event_name: "Stop" }));
+    expect(named("alpha").question).toBeNull();
+  });
+
+  it("never covers a permission card: the session asking gets the amber badge instead", async () => {
+    const { State, send, named, island } = await load();
+    send(permission("p-1", "Bash", { command: "rm x" }, from("a", "alpha")));
+    send(permission("q-1", "AskUserQuestion", ASK, from("b", "beta")));
+
+    expect(bridge.Bridge.approvalDecline).toHaveBeenCalledExactlyOnceWith("q-1");
+    expect(State.view).toBe("approval");
+    expect(State.pendingApproval?.requestId).toBe("p-1");
+    expect(island.alert).toHaveBeenCalledExactlyOnceWith("approval");
+    expect(named("beta")).toMatchObject({ state: "question", pillBadge: "approval" });
+  });
+
+  it("names the question in the ticker", async () => {
+    const { send, only } = await load();
+    send(from("a", "alpha", { hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_input: ASK }));
+    // Cut at 40 characters, like a command: the ticker row is narrow.
+    expect(only().steps.at(-1)).toBe("Pregunta · ¿Le bloqueo al chat la lectura de secret");
+  });
+});
+
+describe("questionOf", () => {
+  it("reads the first question, its option labels and how many follow", async () => {
+    const { questionOf } = await import("../../src/island/hooks");
+    expect(questionOf("AskUserQuestion", ASK)).toEqual({
+      text: "¿Le bloqueo al chat la lectura de secretos?",
+      options: ["Sí, bloquear (Recomendado)", "No"],
+      more: 1,
+    });
+  });
+
+  it("is null for other tools and for inputs without a question; odd options are skipped", async () => {
+    const { questionOf } = await import("../../src/island/hooks");
+    expect(questionOf("Bash", ASK)).toBeNull();
+    expect(questionOf("AskUserQuestion", {})).toBeNull();
+    expect(questionOf("AskUserQuestion", { questions: "no" })).toBeNull();
+    expect(questionOf("AskUserQuestion", { questions: [{ question: "  " }, null] })).toBeNull();
+    expect(
+      questionOf("AskUserQuestion", { questions: [{ question: " ¿Y? ", options: [{ label: "A" }, { label: 3 }, null, "B", { label: " " }] }] }),
+    ).toEqual({ text: "¿Y?", options: ["A"], more: 0 });
+  });
+});
+
+describe("folding the island over a permission card", () => {
+  it("hands the request back to the terminal, clears the card and badges the session", async () => {
+    const { State, send, only, island } = await load();
+    send(permission("p-1", "Bash", { command: "git push" }));
+    const { handBackApproval } = await import("../../src/island/hooks");
+
+    expect(handBackApproval()).toBe(true);
+    expect(bridge.Bridge.approvalDecline).toHaveBeenCalledExactlyOnceWith("p-1");
+    expect(bridge.Bridge.approvalDecision).not.toHaveBeenCalled();
+    expect(State.pendingApproval).toBeNull();
+    expect(State.isPinned).toBe(false);
+    expect(only().pillBadge).toBe("approval");
+
+    // The 110 s timer has nothing left to drop.
+    vi.advanceTimersByTime(110_000);
+    expect(island.dropPin).not.toHaveBeenCalled();
+    // The terminal's answer is the session's next tool event.
+    send(from("session-1", "my-app", { hook_event_name: "PostToolUse", tool_name: "Bash" }));
+    expect(only().pillBadge).toBeNull();
+  });
+
+  it("does nothing without a card", async () => {
+    await load();
+    const { handBackApproval } = await import("../../src/island/hooks");
+    expect(handBackApproval()).toBe(false);
+    expect(bridge.Bridge.approvalDecline).not.toHaveBeenCalled();
+  });
+
+  it("a request after the fold gets a card of its own", async () => {
+    const { State, send } = await load();
+    send(permission("p-1", "Bash", { command: "one" }));
+    const { handBackApproval } = await import("../../src/island/hooks");
+    handBackApproval();
+    send(permission("p-2", "Bash", { command: "two" }));
+    expect(bridge.Bridge.approvalAck).toHaveBeenLastCalledWith("p-2");
+    expect(State.pendingApproval?.requestId).toBe("p-2");
+  });
+});
+
 describe("the explanation under the command", () => {
   /** Lets the branch lookups (resolved promises) run. */
   const settle = async () => {

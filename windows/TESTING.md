@@ -159,6 +159,14 @@ mocked — asked only after the ack, from the right folder (a `cd` in the
 command included, a WSL session's distro), and an answer that arrives after
 the card is gone is dropped.
 
+`hooks.test.ts` also covers `AskUserQuestion` (declined at once with no ack,
+the question card about the session asking, closed by that call's
+`PostToolUse` or `PostToolUseFailure` or the end of the turn but not by
+another tool finishing, never covering an approval card) and folding over an
+approval card (`handBackApproval`: declined, the card and its timer gone, the
+session badged). `layout.test.ts` checks that only the approval and question
+cards grow, and never past the window.
+
 `bridge.test.ts` tests the bridge itself, with `@tauri-apps/api/core`'s
 `invoke` mocked: the command names and argument keys the Rust side expects
 (`openSession` → `open_session { cwd, wslDistro, sessionId }`, the optional
@@ -215,10 +223,11 @@ What it does, in order:
    - `PermissionRequest` → **Allow** (an `element.click()` on the button, not a
      mouse click) → the relay's stdout is exactly the documented
      `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`;
-   - a **double click on the open island's header strip** (a `dblclick` event,
-     no mousedown — that would arm the drag against the real button) folds it
-     to the compact island; on a tab it does not, nor while an approval card
-     waits for its answer (which then still answers);
+   - a **click on the open island's header strip** (a `click` event, no
+     mousedown — that would arm the drag against the real button) folds it to
+     the compact island, an approval card included: that request is released
+     at once (empty stdout, `released without a decision` logged, no decision
+     sent) and reopening shows no card; a click on a tab does not fold;
    - the same with **Deny** and its documented deny JSON;
    - a second request while a card is up → handed straight back (empty stdout,
      `decline` logged), and the first card still answers;
@@ -239,9 +248,16 @@ What it does, in order:
      a click on a panita takes the left card at once; the left card's ↗ and
      "Open terminal" open the session they belong to, and the right card has
      no ↗; the approval card names the session asking (and its colour) even
-     when it was behind the "+N", says what the command does, and Allow /
-     Deny still answer exactly; another session's request meanwhile is
-     declined and its panita badged; the compact island's minis; `SessionEnd`
+     when it was behind the "+N", says what the command does, its ↗ (inside
+     the card, clear of every row) opens that session and leaves the card up,
+     and Allow / Deny still answer exactly; another session's request
+     meanwhile is declined and its panita badged; an `AskUserQuestion` from a
+     session behind the "+N" is released at once (empty stdout, `not shown`
+     logged) and shows the question card — that session, the question over
+     two lines, the island grown to fit, the options and "+1 more question",
+     Open terminal / OK, rows inside and centred — whose Open terminal opens
+     that session, and which closes on the session's `PostToolUse` for
+     `AskUserQuestion`; the compact island's minis; `SessionEnd`
      one by one down to "No other sessions" and the empty card;
    - **sessions of one project** (three, then four, in the same folder): numbered
      in order of creation ("struxto-especificador", "… 2", "… 3"), the number
@@ -251,8 +267,12 @@ What it does, in order:
    - **the explanation under the command**: approval cards for
      `git push origin main:dev`, `cd ../x && git commit -m "fix"`, a bare
      `git push`, `rm -rf build` (flagged), an unknown command (no line), a
-     `Write`, and a long chain (ends in "…" inside the card, its ⚠ still up
-     front) — each card's rows inside it and in order. The branch comes from
+     `Write`, a chain that needs two lines (shown whole, the island 15 px
+     taller) and a long one (three lines, then "…", its ⚠ still up front) —
+     each card's rows inside it, in order and centred, the island at 176 px
+     plus 15 per extra line, the explanation exactly `CARD_TEXT_W` wide (the
+     width its lines are counted at, `layout.ts`), and the ↗ clear of the
+     text. The branch comes from
      a real repository the suite makes for it, `test-results\e2e\branch-repo\x`
      (`git init -b rama-e2e` and one empty commit), so `Commit en "rama-e2e"`
      proves `git_branch` end to end; with WSL running, `git_branch` is also

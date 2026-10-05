@@ -6,7 +6,7 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
 import { State, isSession, type AgentTask, type PillBadge } from "../core/state";
-import { panitaGrid, washRGBA, type IslandViewName, type Wash } from "../core/layout";
+import { CARD_TEXT_W, EXPLAIN_LINE_H, panitaGrid, washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { displayName, labelParts } from "../core/sessions";
 import { explanationText } from "../core/explain";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
@@ -378,14 +378,56 @@ function buildEmpty(actions: ViewActions): ViewHost {
   return { el: h("div", { class: "view" }, card(null, body)), sync() {} };
 }
 
+// ── Growing cards ─────────────────────────────────────────────────────────────
+//
+// The approval and question cards wrap their text over a few lines instead of
+// cutting it at one, and the island grows to fit (State.cardGrowth, islandSize).
+// How many lines a text takes is measured on a hidden copy at the open island's
+// width (CARD_TEXT_W): the row on screen is narrower while the island springs
+// open, and would ask for too many.
+
+/** A hidden copy of a text row, at the open island's width, to count its lines on. */
+function sizer(): HTMLElement {
+  const el = h("div", { class: "sizer", "aria-hidden": "true" });
+  el.style.width = `${CARD_TEXT_W}px`;
+  return el;
+}
+
+/** Lines `row` takes at CARD_TEXT_W, 1 to `max`; 0 when it is not shown. */
+function linesOf(row: HTMLElement, copy: HTMLElement, lineH: number, max: number): number {
+  if (row.style.display === "none" || !row.textContent) return 0;
+  copy.className = `${row.className} sizer`;
+  copy.replaceChildren(...[...row.childNodes].map((n) => n.cloneNode(true)));
+  return Math.min(max, Math.max(1, Math.round(copy.scrollHeight / lineH)));
+}
+
+/** Sets how much `view`'s card grows, and has the island follow when that changed. */
+function grow(view: IslandViewName, px: number, onHeightChange: () => void) {
+  if ((State.cardGrowth[view] ?? 0) === px) return;
+  State.cardGrowth[view] = px;
+  onHeightChange();
+}
+
+/** The approval card's explanation shows up to this many lines, then ends in "…". */
+const EXPLAIN_MAX_LINES = 3;
+
 // ── Approval ──────────────────────────────────────────────────────────────────
 
-function buildApproval(actions: ViewActions): ViewHost {
+function buildApproval(actions: ViewActions, onHeightChange: () => void): ViewHost {
   const who = h("div");
   const code = h("div", { class: "code" });
   const explain = h("div", { class: "explain" });
+  const explainCopy = sizer();
   const row = h("div", { class: "actions" });
-  const el = h("div", { class: "view approval" }, card("amber", stack(116, 16, who, code, explain, row)));
+  // ↗ to the session asking — its terminal, where the same request is also
+  // waiting — as on the overview's left card.
+  const jump = h(
+    "button",
+    { class: "icon-btn jump", title: "Open", onclick: () => actions.openTerminal() },
+    svg(ICONS.arrowUpRight, 8),
+  );
+  const box = card("amber", stack(116, 16, who, code, explain, row, explainCopy), jump);
+  const el = h("div", { class: "view approval" }, box);
   let rowKey = "";
   let explainKey = "";
   return {
@@ -399,9 +441,10 @@ function buildApproval(actions: ViewActions): ViewHost {
       // name of the tool asking.
       code.textContent = State.pendingApproval?.command || State.pendingApproval?.tool || "…";
       // Under it, what that does, in Spanish (src/core/explain.ts) — no line at
-      // all for a command nothing in the dictionary knows. A ⚠ up front when any
-      // part is destructive, so it shows even if that part is cut off; those
-      // parts in red. The whole line is in the tooltip.
+      // all for a command nothing in the dictionary knows. Up to three lines,
+      // the card growing to fit; past that it ends in "…". A ⚠ up front when
+      // any part is destructive, so it shows even if that part is cut off;
+      // those parts in red. The whole line is in the tooltip.
       const e = State.pendingApproval?.explanation ?? null;
       const key = e ? JSON.stringify(e.parts) : "";
       if (key !== explainKey) {
@@ -417,6 +460,8 @@ function buildApproval(actions: ViewActions): ViewHost {
             explain.append(h("span", { class: p.danger ? "part danger" : "part", text: p.text }));
           });
         }
+        const lines = linesOf(explain, explainCopy, EXPLAIN_LINE_H, EXPLAIN_MAX_LINES);
+        grow("approval", Math.max(0, lines - 1) * EXPLAIN_LINE_H, onHeightChange);
       }
       // Two buttons, built once. Rebuilding them between a mouse-down and a
       // mouse-up would swallow the click, and there is nothing left to vary:
@@ -433,21 +478,59 @@ function buildApproval(actions: ViewActions): ViewHost {
 }
 
 // ── Question ──────────────────────────────────────────────────────────────────
+//
+// A session asking with AskUserQuestion. Claude Code shows the question in the
+// terminal at the same time and takes no answer from the island, so the card
+// only says what is being asked and takes the user there (hooks.ts).
 
-function buildQuestion(): ViewHost {
+/** The question card's question shows up to this many lines, its options as many. */
+const QUESTION_MAX_LINES = 2;
+const OPTIONS_MAX_LINES = 2;
+/** Line height, px, of the question (style.css `.question .title`). */
+const QUESTION_LINE_H = 19;
+
+function buildQuestion(actions: ViewActions, onHeightChange: () => void): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title" });
-  const row = h("div", { class: "actions" });
-  const el = h("div", { class: "view" }, card("cyan", stack(116, 16, who, title, row)));
+  const options = h("div", { class: "explain options" });
+  const titleCopy = sizer();
+  const optionsCopy = sizer();
+  const row = h("div", { class: "actions" },
+    btn("Open terminal", "primary", () => actions.openTerminal()),
+    btn("OK", "secondary", () => actions.collapse()),
+  );
+  const el = h("div", { class: "view question" },
+    card("cyan", stack(116, 16, who, title, options, row, titleCopy, optionsCopy)));
+  let key = "";
   return {
     el,
     sync() {
+      // The session asking, held by the card even if another one leads by now.
+      const task = State.subjectTask;
+      const q = isSession(task) ? task.question ?? null : null;
+      const next = JSON.stringify([task?.id, task?.name, task?.color, q]);
+      if (next === key) return;
+      key = next;
       clear(who);
-      who.append(agentWho(State.focusTask, "Claude Code is asking a question"));
-      const task = State.focusTask;
-      title.textContent = task?.steps.at(-1) ?? "Claude needs an answer.";
-      clear(row);
-      row.append(h("div", { class: "sub", text: "Answer in your terminal — Coucou can't reply for you yet." }));
+      who.append(agentWho(task, "has a question"));
+      title.textContent = q?.text ?? task?.steps.at(-1) ?? "Claude needs an answer.";
+      title.title = q?.text ?? "";
+      clear(options);
+      const parts = [...(q?.options ?? [])];
+      if (q && q.more > 0) parts.push(`+${q.more} more ${q.more === 1 ? "question" : "questions"}`);
+      parts.forEach((text, i) => {
+        if (i > 0) options.append(h("span", { class: "sep", text: " · " }));
+        options.append(h("span", { class: "part", text }));
+      });
+      options.style.display = parts.length > 0 ? "" : "none";
+      options.title = parts.join(" · ");
+      const titleLines = linesOf(title, titleCopy, QUESTION_LINE_H, QUESTION_MAX_LINES);
+      const optionLines = linesOf(options, optionsCopy, EXPLAIN_LINE_H, OPTIONS_MAX_LINES);
+      grow(
+        "question",
+        Math.max(0, titleLines - 1) * QUESTION_LINE_H + Math.max(0, optionLines - 1) * EXPLAIN_LINE_H,
+        onHeightChange,
+      );
     },
   };
 }
@@ -600,21 +683,25 @@ function buildPlaceholder(title: string, sub: string): ViewHost {
 
 // ── Registry ──────────────────────────────────────────────────────────────────
 
+/**
+ * `onHeightChange`: a view's height changed without the view changing — the
+ * chat growing with its messages, a card growing with its text.
+ */
 export function buildViews(
   actions: ViewActions,
-  onChatHeightChange: () => void,
+  onHeightChange: () => void,
 ): Map<IslandViewName, ViewHost> {
   const map = new Map<IslandViewName, ViewHost>();
   map.set("overview", buildOverview(actions));
   map.set("empty", buildEmpty(actions));
-  map.set("approval", buildApproval(actions));
-  map.set("question", buildQuestion());
+  map.set("approval", buildApproval(actions, onHeightChange));
+  map.set("question", buildQuestion(actions, onHeightChange));
   map.set("error", buildError(actions));
   map.set("finished", buildFinished(actions));
   map.set("confused", buildConfused());
   map.set("note", buildNote());
   map.set("settings", buildSettings(actions));
-  map.set("prompt", buildPrompt(onChatHeightChange));
+  map.set("prompt", buildPrompt(onHeightChange));
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());
   map.set("choose", buildChoose(actions));

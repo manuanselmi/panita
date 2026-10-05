@@ -21,6 +21,7 @@ import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
+import { handBackApproval } from "./hooks";
 import { openPrimary, openSubject } from "./open";
 
 const BOT_OVERHANG = 40;
@@ -28,6 +29,12 @@ const BOT_OVERHANG = 40;
 const HIT_MARGIN = 14;
 /** Same as DRAG_THRESHOLD in src-tauri/src/island.rs: past it, a press is a drag. */
 const DRAG_THRESHOLD = 4;
+/**
+ * After a click on the header strip folds the island, a click on the compact
+ * island this soon is the second half of a double click — the gesture that
+ * used to fold it — and must not open it straight back.
+ */
+const REOPEN_GUARD_MS = 500;
 
 /** The three views the drop sequence owns; leaving them stops the engine. */
 const UPLOAD_VIEWS: ReadonlySet<IslandViewName> = new Set(["upload", "uploading", "choose"]);
@@ -86,6 +93,10 @@ export class Island {
   private dragStarted = false;
   /** Pointer x on screen at the last mousedown, to tell a click from a drag. */
   private pressScreenX = 0;
+  /** Pointer x on screen at a mousedown on the header strip; null when the last press was elsewhere, or none. */
+  private stripPress: number | null = null;
+  /** When a click on the header strip last folded the island (performance.now()). */
+  private foldedAt = Number.NEGATIVE_INFINITY;
   private homeCollapseAt: number | null = null;
 
   // Bot hover → love (IslandWindowController.botHoverIn)
@@ -326,6 +337,20 @@ export class Island {
     this.fsm.forcePetit();
   }
 
+  /**
+   * The user's own "close": a click on the header strip, or Escape. It works
+   * whatever the island shows, a permission card included — Claude Code asks
+   * in the terminal too from the moment the request comes in, so that request
+   * is handed back there rather than left waiting on a card nobody can see
+   * (handBackApproval).
+   */
+  fold() {
+    if (State.mode !== "expanded") return;
+    handBackApproval();
+    Sound.play("blip");
+    this.collapse();
+  }
+
   /** Alert from the hook server: open on this view. Pinned alerts never auto-close. */
   alert(view: IslandViewName) {
     this.fsm.pinned = State.isPinned;
@@ -453,7 +478,7 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length);
+    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length, State.cardGrowth[State.view] ?? 0);
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
@@ -522,7 +547,7 @@ export class Island {
 
   /**
    * The open island's empty header strip — between the tabs and the gear,
-   * outside every button: what can be grabbed, and double-clicked to fold.
+   * outside every button: what can be grabbed, and clicked to fold.
    */
   private isHeaderStrip(target: EventTarget | null): boolean {
     return target instanceof Element && this.header.el.contains(target) && target.closest("button") == null;
@@ -571,7 +596,9 @@ export class Island {
         if (e.button === 0) void Bridge.islandPress();
         return;
       }
+      this.stripPress = null;
       if (e.button === 0 && this.isHeaderStrip(e.target)) {
+        this.stripPress = e.screenX;
         void Bridge.islandPress();
         return;
       }
@@ -587,20 +614,26 @@ export class Island {
       // mouseup, and the page's own distance misses a drag that came back.
       const moved = Math.abs(e.screenX - this.pressScreenX) >= DRAG_THRESHOLD;
       if (this.dragStarted || moved) return;
+      if (performance.now() - this.foldedAt < REOPEN_GUARD_MS) return;
       this.fsm.click();
     });
 
-    // A double click on the header strip folds the open island down to the
-    // compact one. Not while an approval waits for its answer — the same rule
-    // as Escape: folded, the card could not be answered until the relay gave up.
-    this.header.el.addEventListener("dblclick", (e) => {
-      if (State.mode !== "expanded" || State.isPinned || !this.isHeaderStrip(e.target)) return;
-      Sound.play("blip");
-      this.collapse();
+    // A click on the header strip folds the open island down to the compact
+    // one — whatever it shows, an approval card included (fold). A press that
+    // became a drag is not a click, by the same two signals as above. (A click
+    // event with no press before it, as the e2e suite sends, counts as a click.)
+    this.header.el.addEventListener("click", (e) => {
+      const press = this.stripPress;
+      this.stripPress = null;
+      if (State.mode !== "expanded" || !this.isHeaderStrip(e.target)) return;
+      const moved = press != null && Math.abs(e.screenX - press) >= DRAG_THRESHOLD;
+      if (this.dragStarted || moved) return;
+      this.foldedAt = performance.now();
+      this.fold();
     });
 
     window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
+      if (e.key === "Escape" && State.mode === "expanded") this.fold();
       State.lastActivity = performance.now();
     });
 

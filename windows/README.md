@@ -42,17 +42,19 @@ installs for the current user only — no admin prompt.
 | Move the mouse to the very top of the screen, where the island lives (top-centre until you move it) | Mochi peeks out |
 | Click the small island | It opens |
 | Drag the small island — or the open island by the empty strip of its header — sideways | It slides along the top edge and stays where you leave it, across restarts. Against an edge, it opens towards the middle; dragged back near the middle, it snaps to the centre |
-| Double-click the empty strip of the open island's header | It folds back to the small island (not while a permission request waits for its answer) |
+| Click the empty strip of the open island's header | It folds back to the small island — whatever it shows. Over a permission card, the request goes back to the terminal, which has been asking too; that session's panita keeps an amber badge until it moves on |
 | Click Mochi | It gets annoyed. Three times in a row and it goes dizzy |
 | Rest the pointer on Mochi for two seconds | Hearts |
 | Drag a file onto the island | Mochi turns into a box, swallows it, then offers to answer questions about it |
-| `Esc` | Closes the island |
+| `Esc` | Closes the island, like a click on the header strip |
 | Tray icon | Open, Settings…, Pause, Quit |
 
 Everything else happens on its own: a Claude Code permission request opens the
 island with **Deny / Allow**, says which session is asking, and explains under
-the command what it will do (see below); a finished session shows what it did;
-and every Claude Code session running — Windows or WSL — gets its own colour:
+the command what it will do (see below), with a ↗ to that session's terminal;
+a question Claude Code asks (`AskUserQuestion`) shows the question and its
+options, with **Open terminal** to go and answer it (see below); a finished
+session shows what it did; and every Claude Code session running — Windows or WSL — gets its own colour:
 the most recently active on the left with its steps, every other one as a
 small coloured Mochi — a *panita* — on the right, up to six (past six, the
 last one is a "+N"); click one to bring it to the left. Sessions in the same
@@ -64,13 +66,26 @@ panitas after the sessions.
 
 ### What a command does
 
-Under the command on the approval card, a short line in Spanish says what it
+Under the command on the approval card, a few words of Spanish say what it
 does — `Push de "main" a "dev"`, `Moverse a "x" → Commit en "dev": "fix"`,
 `Eliminar "build" y todo su contenido` — with destructive actions in red and a
 ⚠. The branch of a commit or push is asked of git (`git rev-parse --abbrev-ref
 HEAD` in the session's folder, or inside its WSL distro) once the card is up,
 and fills in when it arrives; until then, or if git has no answer, it says
 "la rama actual". A command it does not know gets no line rather than a guess.
+A long chain wraps over up to three lines, the card growing to fit, and ends
+in "…" past that; the whole of it is in the line's tooltip.
+
+### Questions
+
+When a session asks with `AskUserQuestion`, Claude Code puts the question up in
+the terminal straight away, while it asks the hook, and a bare "allow" from a
+hook is not an answer to it (as read in Claude Code 2.1.289: only an allow
+carrying the user's choices is). So Coucou does not hold it:
+the request goes back to Claude Code at once, and the island shows a question
+card instead — the first question, its options, how many more follow — with
+**Open terminal** to go and answer it. The card goes once the question is
+answered (or the turn ends).
 
 The dictionary lives in [`src/core/explain.ts`](src/core/explain.ts): an
 ordered list of rules (git, files and folders, npm/pnpm/yarn/pip/cargo/docker,

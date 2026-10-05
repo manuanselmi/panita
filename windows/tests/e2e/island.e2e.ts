@@ -50,7 +50,7 @@ import {
   wslTarget,
 } from "./harness";
 import { FakeVsCodeWindow, sideExtensionPipes, startSilentWindow } from "./fake-vscode";
-import { IslandPage, SIZES, type ActiveView, type Overview } from "./island-page";
+import { IslandPage, SIZES, type ActiveView, type CardLayout, type Overview } from "./island-page";
 import { SettingsPage } from "./settings-page";
 
 // The documented PermissionRequest output (https://code.claude.com/docs/en/hooks),
@@ -307,30 +307,37 @@ describe(`side instance "${INSTANCE}"`, () => {
     await page.screenshot("04-after-allow");
   });
 
-  it("a double click on the header strip folds the open island — not on a tab, not over an approval", async () => {
-    // An approval waits on the open island: folding it would leave the relay
-    // waiting on a card nobody can see, so the double click does nothing.
+  it("a click on the header strip folds the open island — over an approval too, which goes back to the terminal", async () => {
+    // Claude Code asks in the terminal too from the moment the request comes
+    // in, so folding hands the request back there: the relay prints nothing
+    // at once instead of holding Claude Code for the rest of its two minutes.
+    const from = readSideLog().length;
     const hook = runHook("PermissionRequest", permission("echo fold-e2e"));
     await page.waitForApproval("Bash · echo fold-e2e");
+    const [, id] = await waitForLog(/hook PermissionRequest id=(\S+)/, 5_000, from);
     await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
-    await page.dblclickHeader("strip");
-    await sleep(600);
-    expect((await page.settle()).width).toBe(SIZES.expanded.width);
-    expect((await page.activeView())?.code).toBe("Bash · echo fold-e2e");
-    await page.click("Allow");
-    expect((await hook).stdout).toBe(ALLOW_JSON);
-    await page.waitForView("the card to close", (v) => v.code === null);
+    const folded = Date.now();
+    await page.clickHeader("strip");
+    await waitFor("the compact island", async () => (await page.settle()).width === SIZES.compact.width, 3_000);
+    const run = await hook;
+    expect(run).toMatchObject({ code: 0, stdout: "", stderr: "" });
+    expect(Date.now() - folded).toBeLessThan(QUICK_MS);
+    await waitForLog(new RegExp(`hook id=${escapeRe(id)} released without a decision`), 5_000, from);
+    expect(readSideLog().slice(from)).not.toContain(`decision id=${id}`);
+    await page.screenshot("04b-folded-over-an-approval");
 
-    // Open with nothing pending: a tab is a button, not the strip.
+    // Opened again, there is no card left to answer.
     await page.emit("tray", "open");
     await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
-    await page.dblclickHeader("tab");
+    expect((await page.activeView())?.code).toBeNull();
+
+    // A tab is a button, not the strip.
+    await page.clickHeader("tab");
     await sleep(600);
     expect((await page.settle()).width).toBe(SIZES.expanded.width);
 
-    await page.dblclickHeader("strip");
+    await page.clickHeader("strip");
     await waitFor("the compact island", async () => (await page.settle()).width === SIZES.compact.width, 3_000);
-    await page.screenshot("04b-folded-by-double-click");
   });
 
   it("PermissionRequest → Deny prints the documented deny JSON", async () => {
@@ -578,6 +585,16 @@ describe(`side instance "${INSTANCE}"`, () => {
       await waitForLog(/hook PermissionRequest id=(\S+)/, 5_000, from);
       await page.screenshot("1a-approval-session");
 
+      // Its ↗ goes to the session asking — not to struxto, on the left card
+      // until a moment ago — and the card stays up, still answerable.
+      expect((await page.cardLayout()).jump).toEqual({ inside: true, clear: true });
+      const before = (await page.opens()).length;
+      await page.clickCardOpen();
+      expect((await page.opens()).slice(before)).toEqual([
+        { cmd: "open_session", args: { cwd: S.hekta.cwd, wslDistro: null, sessionId: S.hekta.id } },
+      ]);
+      expect((await page.activeView())?.code).toBe("Bash · rm -rf ./hekta-build");
+
       await page.click("Allow");
       const run = await hook;
       expect(run.stdout).toBe(ALLOW_JSON);
@@ -614,6 +631,64 @@ describe(`side instance "${INSTANCE}"`, () => {
       expect(o.primary?.name).toBe("struxto");
       await openIsland();
       await page.screenshot("1c-badge");
+    });
+
+    it("AskUserQuestion goes straight back; the question card says what is asked, Open terminal opens that session", async () => {
+      const from = readSideLog().length;
+      const question = "¿Le bloqueo al chat la lectura de secretos y datos de clientes (.env, credenciales, dumps .sql/.csv grandes)?";
+      const ask = {
+        questions: [
+          {
+            question,
+            header: "Seguridad",
+            multiSelect: false,
+            options: [
+              { label: "Sí, bloquear (Recomendado)", description: "Reglas de denegación" },
+              { label: "No, que lea todo", description: "" },
+            ],
+          },
+          { question: "¿Dónde vive el mapa de proyectos?", header: "Mapa", multiSelect: false, options: [{ label: "En el CLAUDE.md", description: "" }] },
+        ],
+      };
+      const run = await runHook(
+        "PermissionRequest",
+        payloadOf(S.notas, { permission_mode: "default", tool_name: "AskUserQuestion", tool_input: ask }),
+      );
+      // Nothing waits on the island: Claude Code has the question up in the
+      // terminal already, and an "allow" from here would not answer it.
+      expect(run).toMatchObject({ code: 0, stdout: "", stderr: "" });
+      expect(run.ms).toBeLessThan(QUICK_MS);
+      const [, id] = await waitForLog(/hook PermissionRequest id=(\S+)/, 5_000, from);
+      await waitForLog(new RegExp(`hook id=${escapeRe(id)} not shown`), 5_000, from);
+
+      const card = await page.waitForView("notas's question card", (v) => v.classes.includes("question") && v.who === "notas");
+      expect(card.whoColor).toBe(seen.get("notas"));
+      expect(card.code).toBeNull();
+      expect(card.buttons).toEqual(["Open terminal", "OK"]);
+      expect(card.text).toContain(question);
+      expect(card.explain).toBe("Sí, bloquear (Recomendado) · No, que lea todo · +1 more question");
+
+      // Grown to fit the question's two lines, and laid out like the approval card.
+      const layout = await page.cardLayout("question");
+      expect(layout.titleLines).toBe(2);
+      expect(layout.explainLines).toBe(1);
+      await waitFor("the island at the question card's size", async () => (await page.settle()).height === 168 + 19);
+      await page.screenshot("1c2-question");
+      const settled = await page.cardLayout("question");
+      expect(settled.inside, JSON.stringify(settled)).toBe(true);
+      expect(settled.ordered, JSON.stringify(settled)).toBe(true);
+      expect(settled.cardHeight).toBe(168 + 19 - 8 - 34 - 10);
+      expect(Math.abs(settled.topGap - settled.bottomGap), JSON.stringify(settled)).toBeLessThanOrEqual(2);
+
+      const before = (await page.opens()).length;
+      await page.click("Open terminal");
+      expect((await page.opens()).slice(before)).toEqual([
+        { cmd: "open_session", args: { cwd: S.notas.cwd, wslDistro: null, sessionId: S.notas.id } },
+      ]);
+
+      // Answered in the terminal: the card has nothing left to say.
+      await runHook("PostToolUse", payloadOf(S.notas, { tool_name: "AskUserQuestion", tool_input: ask, tool_response: {} }));
+      await page.waitForView("the question card to close", (v) => !v.classes.includes("question"));
     });
 
     it("Stop opens the finished card naming that session; Open terminal opens it", async () => {
@@ -807,27 +882,32 @@ describe(`side instance "${INSTANCE}"`, () => {
       accept: (v: ActiveView) => boolean,
       shot: string,
       who: E2eSession = asker,
-    ): Promise<ActiveView> {
+    ): Promise<ActiveView & { layout: CardLayout }> {
       const hook = runHook("PermissionRequest", payloadOf(who, { permission_mode: "default", tool_name: tool, tool_input: input }));
       await page.waitForApproval(code);
       try {
         const card = await page.waitForView(`the explanation for ${code}`, (v) => v.code === code && accept(v));
-        // The approval card is 16 px taller than the others (layout.ts): wait
-        // for the island's spring to get there before measuring.
+        // The approval card is 16 px taller than the others (layout.ts), and
+        // 15 px more for each line of explanation past the first: wait for the
+        // island's spring to get there before measuring.
+        const height = async () => 176 + Math.max(0, (await page.cardLayout()).explainLines - 1) * 15;
         await waitFor("the island at the approval card's size", async () => {
           const box = await page.settle();
-          return box.width === SIZES.expanded.width && box.height === 176;
+          return box.width === SIZES.expanded.width && box.height === (await height());
         });
         // The screenshot also waits out the view's scale-in (style.css, `.view.on`),
         // so the card is measured at its real size.
         await page.screenshot(shot);
-        const layout = await page.approvalLayout();
+        const layout = await page.cardLayout();
         expect(layout.inside, "a row of the card spills out").toBe(true);
         expect(layout.ordered, "rows of the card overlap").toBe(true);
-        expect(layout.cardHeight).toBe(176 - 8 - 34 - 10); // the island less its padding and header
+        expect(layout.cardHeight).toBe((await height()) - 8 - 34 - 10); // the island less its padding and header
         // Centred in the card: as much room above the first row as below the last.
         expect(Math.abs(layout.topGap - layout.bottomGap), JSON.stringify(layout)).toBeLessThanOrEqual(2);
-        return card;
+        // The lines were counted at this width (layout.ts, CARD_TEXT_W).
+        if (layout.explainLines > 0) expect(layout.explainWidth).toBe(640 - 20 - 2 - 116 - 16);
+        expect(layout.jump).toEqual({ inside: true, clear: true });
+        return { ...card, layout };
       } finally {
         await page.click("Deny");
         expect((await hook).stdout).toBe(DENY_JSON);
@@ -877,12 +957,22 @@ describe(`side instance "${INSTANCE}"`, () => {
       expect(card.explain).toBe('Escribir el archivo "x.ts"');
     });
 
-    it("a long chain ends in … inside the card, its ⚠ still up front", async () => {
-      const command = "cd ../x && npm ci && npm run build && npm test && git add -A && git commit -m wip && rm -rf dist";
+    it("a chain that needs two lines shows whole, the card one line taller", async () => {
+      const command = "git fetch && git checkout main && git pull && npm ci && npm test";
       const card = await ask("Bash", { command }, `Bash · ${command}`,
-        (v) => v.explain !== null, "36-explain-long");
+        (v) => v.explain !== null, "36-explain-two-lines");
+      expect(card.layout.explainLines).toBe(2);
+      expect(card.layout.explainClamped).toBe(false);
+    });
+
+    it("a long chain wraps to three lines, then ends in … inside the card, its ⚠ still up front", async () => {
+      const command =
+        "cd ../x && npm ci && npm run build && npm test && git add -A && git commit -m wip && git push --force && rm -rf dist && rm -rf node_modules";
+      const card = await ask("Bash", { command }, `Bash · ${command}`,
+        (v) => v.explain !== null, "37-explain-long");
+      expect(card.layout.explainLines).toBe(3);
+      expect(card.layout.explainClamped).toBe(true);
       expect(card.explainWarn).toBe(true);
-      expect(await page.approvalLayout()).toMatchObject({ inside: true });
       await runHook("SessionEnd", payloadOf(asker, { reason: "exit" }));
     });
 
