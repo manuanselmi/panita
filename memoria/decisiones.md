@@ -274,7 +274,8 @@ suites desde PowerShell, mira las capturas y deja el comando para que Manuel lo 
 
 ## D-015 — La isla se puede arrastrar por el borde de arriba; doble click en el header la achica
 
-**Fecha:** 2026-10-01 · **Estado:** vigente
+**Fecha:** 2026-10-01 · **Estado:** vigente el arrastre; el plegado (doble click, y no sobre un
+permiso) superado por D-018
 
 **Contexto.** Centrada arriba, la isla le tapa a Manuel lo que tiene en esa zona de la
 pantalla. Además, para achicarla había que esperar el cierre automático (15 s): `Esc` casi
@@ -393,3 +394,68 @@ suscripción de Manuel; carpeta hub de juguete con un `CLAUDE.md` con una palabr
 **Consecuencias.** La regla 6 de `CLAUDE.md` cambia: lo prohibido es que la app use o guarde
 credenciales de la suscripción, no que corra el CLI oficial. Quedan para la implementación las
 preguntas C1–C3 de `preguntas-abiertas.md` (la carpeta hub, el modelo, los proyectos en WSL).
+
+## D-018 — Las preguntas de Claude no son permisos; la tarjeta de permiso crece y tiene ↗; un click en el header pliega la isla siempre
+
+**Fecha:** 2026-10-05 · **Estado:** vigente · **Supera a:** D-015 en el plegado (el arrastre
+sigue vigente)
+
+> Numerada D-018 porque la rama `chat-deny` (otra sesión, sin commitear al escribir esto) ya
+> tiene una D-017. Si al integrar el número choca, se renumera la que entre segunda.
+
+**Contexto.** Pedido de Manuel, con una captura: (1) cuando Claude pregunta con
+`AskUserQuestion`, la isla mostraba una tarjeta de permiso que decía solo "AskUserQuestion" con
+Deny / Allow, sin la pregunta; (2) la explicación del comando se cortaba en "…" a un renglón;
+(3) no podía cerrar la isla con una tarjeta abierta. Datos nuevos, que reabren lo que D-015 dejó
+dicho ("plegada, nadie podría contestarla hasta que el relay se rinda"):
+- `[CONFIRMADO]` leyendo el binario de Claude Code 2.1.289 (`~/.local/bin/claude.exe`): ante un
+  permiso, Claude Code corre el hook `PermissionRequest` **y muestra su diálogo en la terminal al
+  mismo tiempo** (`Promise.race([hook, diálogo])`); gana el primero. La terminal pregunta desde
+  el primer momento, esté la isla abierta, plegada o colgada.
+- `[CONFIRMADO]` mismo binario: si el hook devuelve "allow" **sin `updatedInput`** para una
+  herramienta que pide interacción del usuario, la decisión del hook se ignora y sigue el
+  diálogo. `AskUserQuestion` es una de las (dos) herramientas a las que un hook puede contestar
+  con `updatedInput`; la otra, por el nombre minificado, sería `ExitPlanMode` `[SUPUESTO]`.
+  `[SUPUESTO]` fuerte: `AskUserQuestion` declara que pide interacción (no se llegó a leer).
+  O sea: el Allow de la isla para una pregunta no hacía nada, y el Deny se la rechazaba a Claude.
+- `[CONFIRMADO]` en el log: el `AskUserQuestion` del 2026-10-05 11:57 (id `30600-14`) estuvo
+  108 s en la isla sin respuesta y se contestó en la terminal.
+
+**Decisión.**
+1. **`AskUserQuestion` no pasa por la tarjeta de permiso.** El pedido se devuelve al instante
+   (decline: el relay sale vacío y la terminal, que ya la muestra, sigue) y la isla abre una
+   **tarjeta de pregunta** sobre esa sesión: la primera pregunta (hasta dos renglones), sus
+   opciones, "+N more questions", **Open terminal** y **OK**. Se va sola cuando llega el
+   `PostToolUse` / `PostToolUseFailure` de `AskUserQuestion` de esa sesión, o termina el turno
+   (`UserPromptSubmit`, `Stop`); no con cualquier herramienta, porque un subagente de la misma
+   sesión puede seguir trabajando mientras la pregunta espera. Nunca tapa una tarjeta de
+   permiso: en ese caso la sesión queda con el badge ámbar.
+2. **La tarjeta de permiso tiene ↗** (arriba a la derecha, como la tarjeta izquierda del
+   overview) a la sesión que pide. La tarjeta queda arriba: se puede contestar en cualquiera de
+   los dos lados.
+3. **La explicación ocupa hasta tres renglones**, y la isla crece 15 px por renglón extra; pasado
+   eso, "…" (el texto completo sigue en el tooltip). Los renglones se cuentan sobre una copia
+   oculta al ancho de la isla abierta (`CARD_TEXT_W` en `layout.ts`), no sobre la fila visible,
+   que es más angosta mientras la isla se abre. El e2e verifica que la fila real mida eso.
+4. **Un click** (no doble) en la franja vacía del header pliega la isla, muestre lo que muestre;
+   `Esc` hace lo mismo. Si hay una tarjeta de permiso, el pedido se devuelve a la terminal
+   (decline) y el panita de esa sesión queda con badge ámbar hasta que haga otra cosa. Cerrar =
+   "lo contesto en la terminal".
+
+**Descartadas.**
+- *Dejar Deny / Allow en `AskUserQuestion` y solo sumar ↗* (lo literal del pedido): Allow no
+  hace nada y Deny le rechaza la pregunta a Claude; dejar esos botones es una trampa.
+- *Plegar dejando el permiso pendiente*, con la tarjeta volviendo al reabrir: conserva aprobar
+  desde la isla, pero deja estado escondido hasta 110 s y reabre sobre algo que el usuario
+  cerró. Como la terminal ya pregunta, devolverlo no pierde nada.
+- *Altura fija más alta para la tarjeta de permiso*: más simple, pero deja aire de sobra en el
+  caso común de un renglón.
+- *Seguir con doble click* (D-015): Manuel pidió click. El primer click de un doble click ya
+  pliega; el segundo no reabre la isla (500 ms de guarda, `REOPEN_GUARD_MS`).
+- *Contestar la pregunta desde la isla* eligiendo una opción: parece posible (dato de arriba), pero
+  el formato de `updatedInput` para `AskUserQuestion` no está documentado. Queda como pregunta I5.
+
+**Consecuencias.** Un permiso que se contesta en la terminal sigue dejando la tarjeta arriba
+hasta los 110 s del relay; ahora al menos se cierra con un click (pregunta O7). Si una versión
+futura de Claude Code dejara de mostrar el diálogo en paralelo, plegar sobre un permiso seguiría
+siendo seguro (el decline hace que pregunte la terminal) pero volvería a tener sentido revisarlo.

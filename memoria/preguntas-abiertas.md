@@ -43,6 +43,14 @@ Con el orden por actividad (D-004) la sesión clickeada se va cuando otra hace a
 2 s. Si en el uso real molesta, la alternativa es fijarla hasta otro click o hasta que pida algo.
 Desbloquea: posible ajuste a D-004.
 
+### I5. ¿Se puede contestar una pregunta de Claude (`AskUserQuestion`) desde la isla? (D-018)
+En el binario de Claude Code 2.1.289 un hook `PermissionRequest` puede devolver "allow" con
+`updatedInput` para `AskUserQuestion`, y eso cuenta como respuesta. Falta saber la forma exacta
+(el SDK de agentes usa `{ questions, answers: { "<pregunta>": "<opción>" } }` `[REPORTADO]`, por
+lo que se recuerda de su documentación), si `coucou-hook` puede mandar ese JSON, y cómo se elige
+una opción en la isla con varias preguntas o multiSelect. Desbloquea: contestar sin ir a la
+terminal. Hoy la tarjeta solo muestra la pregunta y lleva a la terminal.
+
 ### C3. ¿Puede el chat leer proyectos que viven dentro de WSL? (D-016)
 El proceso corre en Windows; las rutas `\\wsl.localhost\Ubuntu-24.04\…` en `--add-dir` no se
 probaron. La mayoría de los repos están del lado Windows (`Documents\GitHub`). `[A VERIFICAR]`
@@ -77,6 +85,13 @@ causó la rama `island-drag` (no toca `hook/`). `[SUPUESTO]`: algún proceso int
 de MSYS termina mientras el test corre, y el test asume que todos los ancestros siguen vivos.
 Desbloquea: confiar en las suites corridas desde Git Bash; quizá el test tenga que tolerar un
 ancestro que termina (el recorrido en producción ya corta ahí).
+
+### O7. ¿Se puede sacar la tarjeta de permiso cuando se contesta en la terminal?
+Claude Code muestra el permiso en la terminal y en la isla a la vez (D-018). Si se contesta en
+la terminal, la tarjeta queda arriba hasta que el relay se rinde (110 s) o hasta cerrarla con un
+click. Dos señales posibles, sin probar: el `PostToolUse` de la misma herramienta con el mismo
+`tool_input` (si se aprobó), o que Claude Code mate al relay al ganar el diálogo y el pipe se
+cierre `[SUPUESTO]`. Desbloquea: que la tarjeta no mienta después de contestar en la terminal.
 
 ## 🔵 Del producto
 
