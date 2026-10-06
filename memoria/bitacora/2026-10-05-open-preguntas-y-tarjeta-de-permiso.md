@@ -91,6 +91,25 @@ vez "a bare git push…", sin relación aparente (O8). Segunda corrida: 73 en ve
 Rust y vitest 472 en verde. Capturas mirando la compacta (`04c`), el header (`04d`) y el ámbar
 (`04e`).
 
+### 6. Cuenta regresiva y animación de la barra de uso (2026-10-06)
+
+Manuel: que la barra muestre el tiempo que falta para que se resetee el límite de 5 horas en
+lugar del "5h" ("yo ya sé que esa barra es de las 5h"), y que esté mejor animada. Rama
+`usage-countdown`, desde `main` `3e18720`:
+
+- El "5h" del header pasa a ser la cuenta regresiva (`2h 14m`, `47m`), y la compacta la tiene
+  también. Minutos enteros redondeados para arriba: nunca dice "0m" mientras falte algo.
+- La cuenta se redibuja sola una vez por minuto (un `setTimeout` al próximo minuto entero), y
+  solo mientras su medidor está en pantalla: con la isla oculta no corre nada (regla del 0 % de
+  CPU).
+- Animación, toda finita: cada vez que un medidor aparece (abrir la isla, plegarla), la barra
+  se llena desde cero y el porcentaje cuenta con ella (0,9 s, la curva de la isla); una lectura
+  nueva desliza la barra, y si subió le pasa un brillo una vez.
+- La barra queda centrada aunque cambie el ancho de los textos (grilla `1fr auto 1fr`).
+
+El e2e ahora pide la cuenta (`2h 14m`) en los dos medidores, y que un reset a 63 s pase de
+`2m` a `1m` sin ninguna status line en el medio.
+
 ## Qué se aprendió
 
 - `[CONFIRMADO]` (leyendo `workbench.desktop.main.js` de VS Code 1.140): VS Code agrega
