@@ -2,7 +2,7 @@
 // (pipe.rs, from Claude Code's status line), and how the meter reads it.
 
 import { describe, expect, it } from "vitest";
-import { live, parseUsage, percentLabel, usageLevel, usageTitle } from "../../src/core/usage";
+import { live, parseUsage, percentLabel, resetIn, untilNextMinute, usageLevel, usageTitle } from "../../src/core/usage";
 
 const NOW = Date.UTC(2026, 9, 5, 15, 0, 0); // ms
 const IN_AN_HOUR = NOW / 1000 + 3600; // s
@@ -47,6 +47,32 @@ describe("the meter", () => {
 
   it("whole percents, and a sliver used is never 0 %", () => {
     expect([0, 0.2, 0.5, 41.6, 99.6, 100].map(percentLabel)).toEqual(["0%", "1%", "1%", "42%", "100%", "100%"]);
+  });
+
+  it("counts down to the reset in whole minutes, rounded up, and says nothing once it has reset", () => {
+    const at = (s: number) => resetIn(NOW / 1000 + s, NOW);
+    expect(at(5 * 3600)).toBe("5h 00m");
+    expect(at(2 * 3600 + 14 * 60)).toBe("2h 14m");
+    expect(at(2 * 3600 + 5 * 60 - 30)).toBe("2h 05m");
+    expect(at(3600)).toBe("1h 00m");
+    expect(at(3600 - 1)).toBe("1h 00m"); // 59 min 59 s: still the first minute of the hour
+    expect(at(3600 - 60)).toBe("59m");
+    expect(at(47 * 60)).toBe("47m");
+    expect(at(61)).toBe("2m");
+    expect(at(60)).toBe("1m");
+    expect(at(0.001)).toBe("1m");
+    expect(at(0)).toBeNull();
+    expect(at(-5)).toBeNull();
+  });
+
+  it("the countdown redraws as the time left reaches the next whole minute", () => {
+    const resetsAt = NOW / 1000 + 2 * 3600 + 14 * 60 + 25; // "2h 15m" for 25 s more
+    expect(untilNextMinute(resetsAt, NOW)).toBe(25_050);
+    expect(resetIn(resetsAt, NOW + 24_999)).toBe("2h 15m");
+    expect(resetIn(resetsAt, NOW + 25_050)).toBe("2h 14m");
+    // On a whole minute, the next change is a minute away.
+    expect(untilNextMinute(NOW / 1000 + 120, NOW)).toBe(60_050);
+    expect(untilNextMinute(NOW / 1000 + 0.5, NOW)).toBe(550);
   });
 
   it("the tooltip names both windows and when the 5-hour one resets, in local time", () => {

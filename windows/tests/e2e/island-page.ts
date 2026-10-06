@@ -245,16 +245,18 @@ export class IslandPage {
 
   /**
    * The two usage meters — in the open island's header and in the middle of
-   * the compact island — as drawn: shown or not, their percentage, level,
-   * fill and tooltip, and where they sit against the island.
+   * the compact island — as drawn: shown or not, their countdown, percentage,
+   * level, fill and tooltip, and where their bar sits against the island.
    */
   usageMeters(): Promise<Record<"header" | "compact", {
     shown: boolean;
+    /** The time left until the 5-hour window resets, "2h 14m". */
+    reset: string | null;
     pct: string | null;
     level: string | null;
     fill: string | null;
     title: string;
-    /** Horizontal centre minus the island's, px. */
+    /** The bar's horizontal centre minus the island's, px. */
     offCentre: number;
     opacity: number;
   }>> {
@@ -262,9 +264,10 @@ export class IslandPage {
       const island = document.getElementById("island").getBoundingClientRect();
       const read = (el) => {
         const shown = !!el && getComputedStyle(el).display !== "none";
-        const r = el?.getBoundingClientRect();
+        const r = el?.querySelector(".usage-track").getBoundingClientRect();
         return {
           shown,
+          reset: shown ? el.querySelector(".usage-reset").textContent : null,
           pct: shown ? el.querySelector(".usage-pct").textContent : null,
           level: shown ? el.dataset.level : null,
           fill: shown ? el.querySelector(".usage-fill").style.width : null,

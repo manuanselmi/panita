@@ -50,6 +50,29 @@ export function percentLabel(pct: number): string {
   return `${pct > 0 && rounded === 0 ? 1 : rounded}%`;
 }
 
+/**
+ * Time left until `resetsAt` (Unix seconds), in whole minutes rounded up — the
+ * way a countdown reads, so it never says "0m" while there is time left:
+ * "2h 05m", "47m", "1m". Minutes are padded past the first hour so the text
+ * keeps its width from one minute to the next. Null once the window has reset.
+ */
+export function resetIn(resetsAt: number, nowMs: number): string | null {
+  const ms = resetsAt * 1000 - nowMs;
+  if (ms <= 0) return null;
+  const minutes = Math.ceil(ms / 60_000);
+  const hours = Math.floor(minutes / 60);
+  return hours ? `${hours}h ${String(minutes % 60).padStart(2, "0")}m` : `${minutes}m`;
+}
+
+/**
+ * Milliseconds until resetIn's text changes: when the time left next reaches a
+ * whole minute, plus a hair so the redraw lands on the new minute.
+ */
+export function untilNextMinute(resetsAt: number, nowMs: number): number {
+  const ms = resetsAt * 1000 - nowMs;
+  return ((((ms % 60_000) + 60_000) % 60_000) || 60_000) + 50;
+}
+
 /** Local time of day as "18:40". */
 function clock(seconds: number): string {
   const d = new Date(seconds * 1000);

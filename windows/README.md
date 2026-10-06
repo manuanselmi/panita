@@ -95,10 +95,14 @@ answered (or the turn ends).
 
 ### Usage
 
-How much of the subscription's **5-hour limit** is used shows as a hairline bar
-and a percentage — centred in the open island's header, and in the middle of
-the small island — amber from 80 %, red from 95 %; its tooltip says when the
-window resets and how much of the weekly limit is used. Claude Code hands those
+How much of the subscription's **5-hour limit** is used shows as the time left
+until it resets (`2h 14m`), a hairline bar and a percentage — centred in the
+open island's header, and in the middle of the small island — amber from 80 %,
+red from 95 %; its tooltip says at what time the window resets and how much of
+the weekly limit is used. Each time a meter comes into view its bar fills from
+empty and the percentage counts up with it; a reading that went up eases the
+bar along and sends a glint down it. The countdown moves once a minute, and
+only while it is on screen. Claude Code hands those
 numbers to its *status line*, not to hooks, so the install below also sets a
 `statusLine`: the same relay, which passes them to Coucou and prints nothing —
 the terminal's status line stays empty. No credential is involved: Coucou never

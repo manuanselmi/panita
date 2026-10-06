@@ -154,7 +154,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   return {
     el,
     sync() {
-      usage.sync(Date.now());
+      usage.sync(Date.now(), State.mode === "expanded");
       const v = State.view;
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
       tabChat.classList.toggle("on", v === "prompt");

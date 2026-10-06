@@ -967,7 +967,7 @@ export class Island {
     // Invisible, it would still sit on the open island's header strip and take
     // the press that folds or drags it.
     this.usageMini.el.style.pointerEvents = showGrid ? "" : "none";
-    this.usageMini.sync(Date.now());
+    this.usageMini.sync(Date.now(), showGrid);
     if (showGrid) {
       const { shown, more } = State.panitaSlots(4);
       const key = shown.map((t) => `${t.id}:${t.color}`).join("|") + `|+${more}`;

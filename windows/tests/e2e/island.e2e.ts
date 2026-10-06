@@ -348,15 +348,17 @@ describe(`side instance "${INSTANCE}"`, () => {
     expect(meters.compact.shown).toBe(false);
 
     const from = readSideLog().length;
-    const inTwoHours = Math.floor(Date.now() / 1000) + 2 * 3600;
+    const now = () => Math.floor(Date.now() / 1000);
+    // 2 h 14 min from now, to the second: the countdown reads "2h 14m" for the next minute.
+    const in2h14 = now() + 2 * 3600 + 14 * 60;
     // What Claude Code hands its status line command (2.1.289), cut down.
-    const status = (fivePct: number) => ({
+    const status = (fivePct: number, resetsAt = in2h14) => ({
       session_id: "e2e-status",
       cwd: CWD,
       model: { id: "claude-opus-5-5", display_name: "Opus" },
       rate_limits: {
-        five_hour: { used_percentage: fivePct, resets_at: inTwoHours },
-        seven_day: { used_percentage: 18, resets_at: inTwoHours + 4 * 86_400 },
+        five_hour: { used_percentage: fivePct, resets_at: resetsAt },
+        seven_day: { used_percentage: 18, resets_at: resetsAt + 4 * 86_400 },
       },
     });
     const run = await runHook("StatusLine", status(42));
@@ -364,11 +366,12 @@ describe(`side instance "${INSTANCE}"`, () => {
     expect(run).toMatchObject({ code: 0, stdout: "", stderr: "" });
     expect(run.ms).toBeLessThan(QUICK_MS);
 
+    // The bar fills from empty and the percentage counts up with it.
     meters = await waitFor("the compact meter at 42%", async () => {
       const m = await page.usageMeters();
       return m.compact.shown && m.compact.pct === "42%" ? m : null;
     });
-    expect(meters.compact).toMatchObject({ level: "ok", fill: "42%", opacity: 1 });
+    expect(meters.compact).toMatchObject({ reset: "2h 14m", level: "ok", fill: "42%", opacity: 1 });
     expect(Math.abs(meters.compact.offCentre)).toBeLessThanOrEqual(1);
     expect(meters.compact.title).toMatch(/^5-hour limit: 42% used · resets at \d\d:\d\d\nWeekly limit: 18% used$/);
     await page.screenshot("04c-usage-compact");
@@ -379,18 +382,34 @@ describe(`side instance "${INSTANCE}"`, () => {
     // Open: the header's meter, centred on the island; the compact one fades out.
     await page.emit("tray", "open");
     await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
-    meters = await page.usageMeters();
-    expect(meters.header).toMatchObject({ shown: true, pct: "42%", level: "ok", fill: "42%" });
+    meters = await waitFor("the header's meter at 42%", async () => {
+      const m = await page.usageMeters();
+      return m.header.pct === "42%" ? m : null;
+    });
+    expect(meters.header).toMatchObject({ shown: true, reset: "2h 14m", level: "ok", fill: "42%" });
     expect(Math.abs(meters.header.offCentre)).toBeLessThanOrEqual(1);
     expect(meters.compact.opacity).toBe(0);
     await page.screenshot("04d-usage-header");
 
-    // Amber from 80 %, red from 95 %.
+    // Amber from 80 %, red from 95 %. A reading that went up eases the bar
+    // along and counts the percentage up to it.
     await runHook("StatusLine", status(85));
     await waitFor("amber", async () => (await page.usageMeters()).header.level === "warn");
-    await page.screenshot("04e-usage-warn");
-    await runHook("StatusLine", status(97));
-    await waitFor("red", async () => (await page.usageMeters()).header.level === "high");
+    await page.screenshot("04e-usage-rising");
+    await waitFor("85%", async () => (await page.usageMeters()).header.pct === "85%");
+    await page.screenshot("04f-usage-warn");
+
+    // The countdown keeps itself up to date while its meter is on screen: a
+    // minute and a bit left reads "2m", and a moment later — nothing new from
+    // any status line in between — "1m".
+    await runHook("StatusLine", status(97, now() + 63));
+    await waitFor("red, 2m left", async () => {
+      const m = (await page.usageMeters()).header;
+      return m.level === "high" && m.reset === "2m";
+    });
+    await waitFor("1m left, on its own", async () => (await page.usageMeters()).header.reset === "1m", 5_000);
+    await waitFor("97%", async () => (await page.usageMeters()).header.pct === "97%");
+    await page.screenshot("04g-usage-high");
 
     // The strip reaches the island's top and sides, and the meter is part of
     // it: a click on it folds the island like any other click on the strip.

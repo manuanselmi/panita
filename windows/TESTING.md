@@ -167,7 +167,8 @@ approval card (`handBackApproval`: declined, the card and its timer gone, the
 session badged). `layout.test.ts` checks that only the approval and question
 cards grow, and never past the window. `usage.test.ts` covers the usage
 meter: what the `usage` event carries, a window shown only until it resets,
-amber at 80 % and red at 95 %, whole percents, the tooltip; and `hooks.test.ts`
+amber at 80 % and red at 95 %, whole percents, the countdown (whole minutes
+rounded up, and when it next changes), the tooltip; and `hooks.test.ts`
 that a `usage` event fills `State.usage` without touching a session and
 redraws when the 5-hour window resets.
 
@@ -236,10 +237,13 @@ What it does, in order:
    - **the usage meters**: none before any status line; then a status line's
      JSON with `rate_limits` through the real relay (`coucou-hook StatusLine`) —
      empty stdout, quick, nothing logged, no session made of it — shows 42 %
-     in the middle of the compact island (centred, with the 5-hour and weekly
-     tooltip), and in the open island's header (centred; the compact one faded
-     out); 85 % turns it amber and 97 % red; the header strip is flush with the
-     island's top and sides, and a click on the meter folds the island;
+     and `2h 14m` left in the middle of the compact island (the bar centred,
+     with the 5-hour and weekly tooltip), and in the open island's header
+     (centred; the compact one faded out), the percentage counting up to it;
+     85 % turns it amber and 97 % red; a reset 63 s away reads `2m`, then
+     `1m` with no status line in between (the countdown ticks on its own); the
+     header strip is flush with the island's top and sides, and a click on the
+     meter folds the island;
    - the same with **Deny** and its documented deny JSON;
    - a second request while a card is up → handed straight back (empty stdout,
      `decline` logged), and the first card still answers;
