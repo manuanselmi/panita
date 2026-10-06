@@ -450,6 +450,39 @@ describe("usage (Claude Code's status line)", () => {
   });
 });
 
+describe("context (a session's own status line)", () => {
+  it("lands on that session, is not activity, and a session the island does not know is left alone", async () => {
+    const { State, send, named } = await load();
+    send(work("a", "alpha", "ls"));
+    send(work("b", "beta", "ls"));
+    const alpha = named("alpha");
+    const order = State.sessions.map((s) => s.id);
+    const before = { activity: alpha.lastActivity, event: alpha.lastEventAt };
+    const notify = vi.spyOn(State, "notify");
+    const handler = bridge.handlers.get("context");
+    if (!handler) throw new Error("hooks.ts never listened for `context`");
+
+    vi.advanceTimersByTime(5_000);
+    handler({ sessionId: "a", usedPercentage: 61.4, tokens: 613_600, windowSize: 1_000_000 });
+    expect(alpha.context).toEqual({ usedPercentage: 61.4, tokens: 613_600, windowSize: 1_000_000 });
+    expect(named("beta").context ?? null).toBeNull();
+    expect({ activity: alpha.lastActivity, event: alpha.lastEventAt }).toEqual(before);
+    expect(State.sessions.map((s) => s.id)).toEqual(order);
+    expect(notify).toHaveBeenCalledTimes(1);
+
+    // The same reading again is no news.
+    handler({ sessionId: "a", usedPercentage: 61.4, tokens: 613_600, windowSize: 1_000_000 });
+    expect(notify).toHaveBeenCalledTimes(1);
+
+    // Nobody the island knows, or nothing usable: nothing happens.
+    handler({ sessionId: "zzz", usedPercentage: 10, tokens: null, windowSize: null });
+    handler({ sessionId: "a", usedPercentage: null });
+    expect(State.sessions).toHaveLength(2);
+    expect(alpha.context?.usedPercentage).toBe(61.4);
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("folding the island over a permission card", () => {
   it("hands the request back to the terminal, clears the card and badges the session", async () => {
     const { State, send, only, island } = await load();

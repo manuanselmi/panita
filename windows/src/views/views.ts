@@ -12,7 +12,7 @@ import { explanationText } from "../core/explain";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
-import { buildUsageMeter } from "./usage";
+import { buildContextMeter, buildUsageMeter } from "./usage";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 
 export interface ViewActions {
@@ -186,7 +186,9 @@ function buildOverview(actions: ViewActions): ViewHost {
     { class: "icon-btn jump", title: "Open", onclick: () => actions.openTarget() },
     svg(ICONS.arrowUpRight, 8),
   );
-  const left = card(null, leftBody, jump);
+  // How full the left session's context window is, at the foot of its card (usage.ts).
+  const context = buildContextMeter();
+  const left = card(null, leftBody, context.el, jump);
   const others = buildOthers(actions);
   const right = card(null, others.el);
 
@@ -281,6 +283,7 @@ function buildOverview(actions: ViewActions): ViewHost {
       }
 
       jump.style.display = detailOpen || !task ? "none" : "";
+      context.sync(isSession(task) ? task : null, State.mode === "expanded");
       others.sync();
     },
   };

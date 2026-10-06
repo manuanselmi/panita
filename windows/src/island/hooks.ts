@@ -8,7 +8,7 @@ import { Bridge, onEvent } from "../core/bridge";
 import { explainTool, resolveFolder } from "../core/explain";
 import { promptSummary, sessionKey } from "../core/sessions";
 import { Sound } from "../core/sound";
-import { parseUsage } from "../core/usage";
+import { parseContext, parseUsage } from "../core/usage";
 import {
   ALERT_VIEWS, State, type ApprovalInfo, type AskedQuestion, type PillBadge, type SessionTask,
 } from "../core/state";
@@ -162,6 +162,26 @@ function describeSession(payload: HookPayload) {
 export function registerHookHandlers(island: Island) {
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
   void onEvent<unknown>("usage", handleUsage);
+  void onEvent<unknown>("context", handleContext);
+}
+
+/**
+ * A session's own status line (pipe.rs): how full its context window is, kept
+ * on the session for the left card's context bar. Like the usage bar's, not a
+ * session event — it neither creates the session nor counts as activity. One
+ * from a session the island does not know yet is dropped: it shows up with its
+ * next hook event, and its next status line, after its next answer, fills it in.
+ */
+function handleContext(payload: unknown) {
+  const parsed = parseContext(payload);
+  if (!parsed) return;
+  const s = State.sessions.find((x) => x.id === sessionKey(parsed.sessionId, undefined));
+  if (!s) return;
+  const { usedPercentage, tokens, windowSize } = parsed.context;
+  const was = s.context;
+  if (was && was.usedPercentage === usedPercentage && was.tokens === tokens && was.windowSize === windowSize) return;
+  s.context = parsed.context;
+  State.notify();
 }
 
 /** Redraws the usage bar when its 5-hour window resets (see handleUsage). */

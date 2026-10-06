@@ -283,6 +283,40 @@ export class IslandPage {
     })()`);
   }
 
+  /** The left card's context meter, as drawn, and where it sits in the card. */
+  contextMeter(): Promise<{
+    shown: boolean;
+    pct: string | null;
+    level: string | null;
+    fill: string | null;
+    title: string;
+    /** Its left and right edges against the ticker's (the steps above it), px: 0 is flush. */
+    vsTicker: { left: number; right: number };
+    /** px from the card's bottom edge. */
+    bottom: number;
+    /** Room between the bottom of the ticker and the top of the meter, px. */
+    belowTicker: number;
+  }> {
+    return this.cdp.evaluate(`(() => {
+      const card = document.querySelector("#views > .view.overview > .left > .card");
+      const el = card.querySelector(".usage.context");
+      const shown = getComputedStyle(el).display !== "none";
+      const c = card.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      const t = card.querySelector(".ticker")?.getBoundingClientRect();
+      return {
+        shown,
+        pct: shown ? el.querySelector(".usage-pct").textContent : null,
+        level: shown ? el.dataset.level : null,
+        fill: shown ? el.querySelector(".usage-fill").style.width : null,
+        title: el.title,
+        vsTicker: t ? { left: Math.round(r.left - t.left), right: Math.round(t.right - r.right) } : null,
+        bottom: Math.round(c.bottom - r.bottom),
+        belowTicker: t ? Math.round(r.top - t.bottom) : 0,
+      };
+    })()`);
+  }
+
   /** The open island's header strip against the island's own edges, px (0 = flush). */
   headerEdges(): Promise<{ top: number; left: number; right: number }> {
     return this.cdp.evaluate(`(() => {

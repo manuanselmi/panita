@@ -168,9 +168,12 @@ session badged). `layout.test.ts` checks that only the approval and question
 cards grow, and never past the window. `usage.test.ts` covers the usage
 meter: what the `usage` event carries, a window shown only until it resets,
 amber at 80 % and red at 95 %, whole percents, the countdown (whole minutes
-rounded up, and when it next changes), the tooltip; and `hooks.test.ts`
-that a `usage` event fills `State.usage` without touching a session and
-redraws when the 5-hour window resets.
+rounded up, and when it next changes), the tooltip, and a session's context
+window (what the `context` event carries, token counts as `/context` writes
+them, its tooltip); and `hooks.test.ts` that a `usage` event fills
+`State.usage` without touching a session and redraws when the 5-hour window
+resets, and that a `context` event lands on its own session without counting
+as activity, and is dropped for a session the island does not know.
 
 `bridge.test.ts` tests the bridge itself, with `@tauri-apps/api/core`'s
 `invoke` mocked: the command names and argument keys the Rust side expects
@@ -242,8 +245,12 @@ What it does, in order:
      (centred; the compact one faded out), the percentage counting up to it;
      85 % turns it amber and 97 % red; a reset 63 s away reads `2m`, then
      `1m` with no status line in between (the countdown ticks on its own); the
-     header strip is flush with the island's top and sides, and a click on the
-     meter folds the island;
+     left session's own status line with `context_window` puts 61 % at the
+     foot of its card (flush with the ticker above it, the tokens in its
+     tooltip) — nothing for its null-before-the-first-message reading, nor for
+     a session the island does not know, and the header keeps its 42 % — and
+     88 % turns it amber; the header strip is flush with the island's top and
+     sides, and a click on the meter folds the island;
    - the same with **Deny** and its documented deny JSON;
    - a second request while a card is up → handed straight back (empty stdout,
      `decline` logged), and the first card still answers;

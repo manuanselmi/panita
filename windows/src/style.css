@@ -308,6 +308,22 @@ body {
   width: 44px;
 }
 
+/* The left card's context meter (views/usage.ts): the same hairline, along the
+   foot of the card's text column — from where the name and the steps start
+   (.who's 108 px) to the ticker's right edge — with the percentage at its end. */
+.card > .usage.context {
+  position: absolute;
+  left: 108px;
+  right: 12px;
+  bottom: 13px;
+  z-index: 1;
+  grid-template-columns: 1fr auto;
+}
+
+.usage.context .usage-track {
+  width: auto;
+}
+
 .tabs {
   display: flex;
   gap: 5px;

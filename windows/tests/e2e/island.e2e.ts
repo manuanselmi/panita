@@ -391,6 +391,46 @@ describe(`side instance "${INSTANCE}"`, () => {
     expect(meters.compact.opacity).toBe(0);
     await page.screenshot("04d-usage-header");
 
+    // The session on the left card says, through its own status line, how full
+    // its context window is: the foot of its card shows it. Not a usage
+    // reading — the header keeps its 42 % — and from a session the island does
+    // not know, nothing.
+    const contextLine = (id: string, pct: number | null) => ({
+      session_id: id,
+      cwd: CWD,
+      context_window: {
+        total_input_tokens: 613_600, total_output_tokens: 900, context_window_size: 1_000_000,
+        current_usage: null, used_percentage: pct, remaining_percentage: pct == null ? null : 100 - pct,
+      },
+    });
+    expect((await page.contextMeter()).shown).toBe(false);
+    // Before its first message Claude Code sends nulls: still nothing.
+    expect(await runHook("StatusLine", contextLine("e2e-session", null))).toMatchObject({ code: 0, stdout: "" });
+    const ctxRun = await runHook("StatusLine", contextLine("e2e-session", 61.36));
+    expect(ctxRun).toMatchObject({ code: 0, stdout: "", stderr: "" });
+    const ctx = await waitFor("the context meter at 61%", async () => {
+      const m = await page.contextMeter();
+      return m.pct === "61%" ? m : null;
+    });
+    expect(ctx).toMatchObject({
+      shown: true, level: "ok", fill: "61.36%", title: "Context: 614k of 1M tokens (61%)",
+      vsTicker: { left: 0, right: 0 },
+    });
+    expect(ctx.bottom).toBeGreaterThanOrEqual(10);
+    expect(ctx.bottom).toBeLessThanOrEqual(16);
+    expect(ctx.belowTicker).toBeGreaterThanOrEqual(4);
+    expect((await page.usageMeters()).header.pct).toBe("42%");
+    await runHook("StatusLine", contextLine("e2e-status", 30));
+    await new Promise((r) => setTimeout(r, 400));
+    expect((await page.contextMeter()).pct).toBe("61%");
+    expect((await page.overview()).primary?.name).not.toBe("e2e-status");
+    await runHook("StatusLine", contextLine("e2e-session", 88));
+    await waitFor("the context meter amber at 88%", async () => {
+      const m = await page.contextMeter();
+      return m.level === "warn" && m.pct === "88%";
+    });
+    await page.screenshot("04h-context");
+
     // Amber from 80 %, red from 95 %. A reading that went up eases the bar
     // along and counts the percentage up to it.
     await runHook("StatusLine", status(85));

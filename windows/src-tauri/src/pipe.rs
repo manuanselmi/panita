@@ -135,12 +135,16 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
     };
 
     // Claude Code's status line (installed with the hooks): only the
-    // subscription's usage goes on, to the island's usage bar. It refreshes
-    // every few seconds while a session works, so it is not logged, and it is
-    // not a session event — no session is created or touched by it.
+    // subscription's usage goes on, to the island's usage bar, and how full the
+    // session's context window is, to the left card. It refreshes every few
+    // seconds while a session works, so it is not logged, and it is not a
+    // session event — no session is created by it.
     if event == STATUS_LINE {
         if let Some(usage) = usage_of(&payload) {
             let _ = app.emit_to(WINDOW_LABEL, "usage", usage);
+        }
+        if let Some(context) = context_of(&payload) {
+            let _ = app.emit_to(WINDOW_LABEL, "context", context);
         }
         let _ = pipe.disconnect();
         return;
@@ -272,6 +276,38 @@ pub fn usage_of(status: &Value) -> Option<Value> {
     Some(json!({ "fiveHour": five, "sevenDay": seven }))
 }
 
+/// What the left card's context bar needs from a status line's JSON: whose it
+/// is (`session_id`, the same id its hooks carry) and how full its context
+/// window is — `{ sessionId, usedPercentage, tokens, windowSize }`, the
+/// percentage 0–100, the other two null when Claude Code leaves them out.
+/// Claude Code sends `context_window.used_percentage` as null until the
+/// session's first message: `None` then, and for a status line without a
+/// session id — nothing to say about anybody.
+pub fn context_of(status: &Value) -> Option<Value> {
+    let session = status
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let window = status.get("context_window")?;
+    let pct = window
+        .get("used_percentage")
+        .and_then(Value::as_f64)
+        .filter(|p| p.is_finite())?;
+    let count = |name: &str| -> Value {
+        match window.get(name).and_then(Value::as_f64) {
+            Some(n) if n.is_finite() && n >= 0.0 => json!(n.round() as u64),
+            _ => Value::Null,
+        }
+    };
+    Some(json!({
+        "sessionId": session,
+        "usedPercentage": pct.clamp(0.0, 100.0),
+        "tokens": count("total_input_tokens"),
+        "windowSize": count("context_window_size"),
+    }))
+}
+
 /// Called by the island's Allow / Deny buttons. Only ever a bare word: turning
 /// it into Claude Code's JSON is coucou-hook's job.
 pub fn answer(app: &AppHandle, request_id: &str, decision: &str) {
@@ -328,6 +364,46 @@ mod tests {
         // Not a subscriber, or before the first answer: no rate_limits at all.
         assert_eq!(usage_of(&json!({ "session_id": "s" })), None);
         assert_eq!(usage_of(&json!({ "rate_limits": {} })), None);
+    }
+
+    #[test]
+    fn the_context_bar_gets_whose_window_it_is_and_how_full() {
+        // The shape Claude Code 2.1.289 documents for a status line command.
+        let status = json!({
+            "session_id": "a1b2", "cwd": "C:\\x",
+            "context_window": {
+                "total_input_tokens": 613_600, "total_output_tokens": 1_200,
+                "context_window_size": 1_000_000,
+                "current_usage": { "input_tokens": 12, "output_tokens": 1_200 },
+                "used_percentage": 61.36, "remaining_percentage": 38.64
+            }
+        });
+        assert_eq!(
+            context_of(&status).unwrap(),
+            json!({ "sessionId": "a1b2", "usedPercentage": 61.36, "tokens": 613_600, "windowSize": 1_000_000 })
+        );
+    }
+
+    #[test]
+    fn no_context_before_the_first_message_or_without_a_session() {
+        // Before the session's first message Claude Code sends nulls.
+        let fresh = json!({ "session_id": "s", "context_window": {
+            "total_input_tokens": 0, "context_window_size": 200_000,
+            "current_usage": null, "used_percentage": null, "remaining_percentage": null
+        } });
+        assert_eq!(context_of(&fresh), None);
+        let full = json!({ "used_percentage": 50 });
+        assert_eq!(context_of(&json!({ "context_window": full.clone() })), None);
+        assert_eq!(context_of(&json!({ "session_id": "  ", "context_window": full })), None);
+        assert_eq!(context_of(&json!({ "session_id": "s" })), None);
+        // Out of range is held to 0–100; counts that are not counts are null.
+        assert_eq!(
+            context_of(&json!({ "session_id": "s", "context_window": {
+                "used_percentage": 104, "total_input_tokens": "lots", "context_window_size": -1
+            } }))
+            .unwrap(),
+            json!({ "sessionId": "s", "usedPercentage": 100.0, "tokens": null, "windowSize": null })
+        );
     }
 
     #[test]
