@@ -110,6 +110,29 @@ lugar del "5h" ("yo ya sé que esa barra es de las 5h"), y que esté mejor anima
 El e2e ahora pide la cuenta (`2h 14m`) en los dos medidores, y que un reset a 63 s pase de
 `2m` a `1m` sin ninguna status line en el medio.
 
+### 7. El contexto de la sesión de la izquierda
+
+Manuel: ver, solo para la sesión seleccionada (la tarjeta de la izquierda), cómo viene su
+contexto. Se presentaron tres lugares (al pie del texto, bajo Mochi, en la fila del nombre) y
+eligió **al pie del texto**.
+
+- `[CONFIRMADO]` (binario de Claude Code 2.1.289): la status line de cada sesión trae
+  `context_window` con `used_percentage` (null antes del primer mensaje),
+  `total_input_tokens` y `context_window_size`, junto a su `session_id`. Es la misma
+  `statusLine` de D-020: no hizo falta otro **Update…**, y el relay ya pasaba el JSON entero.
+- `pipe.rs` emite `context` (`{ sessionId, usedPercentage, tokens, windowSize }`); `hooks.ts`
+  lo guarda en su sesión, sin contarlo como actividad, y lo descarta si la sesión todavía no
+  apareció por un hook; la tarjeta de la izquierda lo dibuja con la misma barra (y la misma
+  animación, ahora compartida en `views/usage.ts`). Ámbar desde 80 %, rojo desde 95 %, como la
+  de 5 h; el tooltip da los tokens (`Context: 614k of 1M tokens (61%)`).
+- Tests: Rust (`context_of`), vitest (`parseContext`, `tokenLabel`, el tooltip, el evento en
+  `hooks.ts`) y el e2e por el relay real. La primera corrida del e2e falló por el test (medía
+  contra el borde exterior de la tarjeta, que tiene 1 px de borde); ahora mide contra el
+  ticker. PowerShell: Rust 110 + 24, vitest 478, e2e 73 y 1 salteado. Captura `04h-context`.
+
+`[SUPUESTO]` Los umbrales de color no miran el autocompact: con ventanas de 200k, Claude Code
+compacta antes del 95 %, así que el rojo puede no verse nunca ahí.
+
 ## Qué se aprendió
 
 - `[CONFIRMADO]` (leyendo `workbench.desktop.main.js` de VS Code 1.140): VS Code agrega
