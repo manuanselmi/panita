@@ -2,9 +2,7 @@
 // (pipe.rs, from Claude Code's status line), and how the meter reads it.
 
 import { describe, expect, it } from "vitest";
-import {
-  contextTitle, live, parseContext, parseUsage, percentLabel, resetIn, tokenLabel, untilNextMinute, usageLevel, usageTitle,
-} from "../../src/core/usage";
+import { live, parseUsage, percentLabel, resetIn, untilNextMinute, usageLevel, usageTitle } from "../../src/core/usage";
 
 const NOW = Date.UTC(2026, 9, 5, 15, 0, 0); // ms
 const IN_AN_HOUR = NOW / 1000 + 3600; // s
@@ -90,33 +88,5 @@ describe("the meter", () => {
       `5-hour limit: 42% used · resets at ${at}`,
     );
     expect(usageTitle(null, NOW)).toBe("");
-  });
-});
-
-describe("a session's context window", () => {
-  it("takes whose window and how full; anything else is nothing", () => {
-    expect(parseContext({ sessionId: " a1 ", usedPercentage: 61.4, tokens: 613_600.4, windowSize: 1_000_000 })).toEqual({
-      sessionId: "a1",
-      context: { usedPercentage: 61.4, tokens: 613_600, windowSize: 1_000_000 },
-    });
-    expect(parseContext({ sessionId: "a1", usedPercentage: 140, tokens: "x", windowSize: -3 })).toEqual({
-      sessionId: "a1",
-      context: { usedPercentage: 100, tokens: null, windowSize: null },
-    });
-    for (const odd of [null, "x", {}, { sessionId: "", usedPercentage: 3 }, { sessionId: "a", usedPercentage: null }, { usedPercentage: 3 }]) {
-      expect(parseContext(odd), JSON.stringify(odd)).toBeNull();
-    }
-  });
-
-  it("token counts read the way /context writes them", () => {
-    expect([0, 950, 1_000, 61_400, 99_940, 613_600, 999_499, 999_500, 1_000_000, 1_234_567].map(tokenLabel)).toEqual(
-      ["0", "950", "1k", "61.4k", "99.9k", "614k", "999k", "1M", "1M", "1.2M"],
-    );
-  });
-
-  it("the tooltip says how many tokens of how many", () => {
-    expect(contextTitle({ usedPercentage: 61.36, tokens: 613_600, windowSize: 1_000_000 })).toBe("Context: 614k of 1M tokens (61%)");
-    expect(contextTitle({ usedPercentage: 12, tokens: 24_000, windowSize: null })).toBe("Context: 24k tokens (12%)");
-    expect(contextTitle({ usedPercentage: 12, tokens: null, windowSize: 200_000 })).toBe("Context: 12% used");
   });
 });

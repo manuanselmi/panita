@@ -111,15 +111,6 @@ refresh while sessions work; the meter is hidden until then, and once its
 window has reset. A `statusLine` of your own is never replaced — the meter then
 stays empty.
 
-The same status line, which every session runs for itself, also says how full
-that session's **context window** is. The left card shows it for the session it
-is showing, as the same kind of bar along the foot of the card (amber from 80 %,
-red from 95 %; the tooltip gives the tokens, `Context: 614k of 1M tokens
-(61%)`). Every session's is kept, so clicking another panita brings its own up at
-once. It appears with a session's first status line after a message — Claude
-Code sends none before — and a session the island has not seen a hook event from
-yet is skipped until it has.
-
 ## Claude Code
 
 <img src="screenshots/settings.png" width="562" alt="The settings window">

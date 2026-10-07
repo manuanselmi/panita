@@ -3,7 +3,7 @@
 import { PANITA_SLOTS, type BotEmoteName, type BotStateName, type IslandMode, type IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 import type { Explanation } from "./explain";
-import type { SessionContext, Usage } from "./usage";
+import type { Usage } from "./usage";
 import {
   SESSION_DWELL_MS, SESSION_EXPIRY_MS, orderSessions, pickOrdinal, pickSessionColor, sameOrder,
 } from "./sessions";
@@ -59,12 +59,6 @@ export interface SessionTask extends AgentTask {
    * its terminal: what the question card shows. Gone once it is answered.
    */
   question?: AskedQuestion | null;
-  /**
-   * How full its context window is, from its own status line (hooks.ts,
-   * `context` event): what the left card's context bar shows. Unknown until its
-   * first status line with a message in it.
-   */
-  context?: SessionContext | null;
 }
 
 /** An AskUserQuestion call, as the question card shows it. */
