@@ -186,6 +186,16 @@ raises the right one. It works for Windows terminals, Remote-WSL windows and
 `wsl` tabs in local windows. Nothing leaves the machine; without the extension,
 or for a session it does not know, ↗ does what it always did.
 
+Sessions typed into a plain console — cmd or PowerShell, in Windows Terminal
+(also when it opens because cmd was started from Start) or in the classic
+console host — have no VS Code window. For those, ↗ brings forward the console
+window itself: Coucou attaches for an instant to the console of each process
+the session runs under and asks Windows which window shows it (for Windows
+Terminal, the Terminal window that owns the tab). Only the window: Windows
+Terminal does not say which tab holds a process, so it comes forward on the tab
+it is showing. If no console of the session is on screen, ↗ falls back to the
+VS Code step above. See `src-tauri/src/console.rs`.
+
 ## Chat and keys
 
 In this fork the island's chat is answered by **Claude Code** — the `claude`
@@ -297,9 +307,9 @@ problems. It stays on your machine.
   a notch.
 - Permission approval works from **any** terminal; the Mac build only listens to
   VS Code sessions.
-- Jumping to a session's terminal goes through VS Code only (its window, and
-  with the companion extension its exact tab); sessions in other terminals are
-  shown and approved like any other, but ↗ opens their folder in VS Code.
+- Jumping to a session's terminal: in VS Code, its window and, with the
+  companion extension, its exact tab; in cmd or PowerShell (Windows Terminal or
+  the classic console), its console window.
 - Not in this version: sending a file by email, and dragging Mochi onto a
   window to attach it as context.
 - Cal.com shows the next bookings as a list rather than the Mac's calendar.

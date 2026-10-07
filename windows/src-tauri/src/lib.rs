@@ -5,6 +5,7 @@
 mod ancestry;
 mod chat_cc;
 mod claude;
+mod console;
 mod extension;
 mod files;
 mod git;
@@ -199,13 +200,24 @@ async fn open_session(
     session_id: Option<String>,
 ) -> Result<vscode::Outcome, String> {
     // Input the window step would refuse is refused before anything is asked.
-    let shown = match session_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
-        Some(id) if vscode::refusal(cwd.as_deref(), wsl_distro.as_deref()).is_none() => {
-            let kind = vscode::session_kind(wsl_distro.as_deref());
-            terminal::show_terminal(terminals.hint(id), kind).await
-        }
+    let kind = vscode::session_kind(wsl_distro.as_deref());
+    let hint = match session_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) if vscode::refusal(cwd.as_deref(), wsl_distro.as_deref()).is_none() => terminals.hint(id),
         _ => None,
     };
+    let shown = match hint.clone() {
+        Some(hint) => terminal::show_terminal(Some(hint), kind).await,
+        None => None,
+    };
+    // No VS Code terminal claimed it: a session typed into cmd or PowerShell
+    // gets its own console window brought forward (console.rs).
+    if shown.is_none() {
+        if let Some(ancestors) = hint.map(|h| h.windows).filter(|a| !a.is_empty()) {
+            if let Ok(Some(outcome)) = off_main_thread(move || console::open_session(&ancestors, kind)).await {
+                return Ok(outcome);
+            }
+        }
+    }
     off_main_thread(move || vscode::open_session(cwd, wsl_distro, shown)).await
 }
 

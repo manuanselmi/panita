@@ -464,6 +464,13 @@ pub fn top_level_windows(accept: &dyn Fn(&str) -> bool) -> Vec<Window> {
     ctx.out
 }
 
+/// The executable of the process that owns `hwnd`, e.g. `WindowsTerminal.exe`.
+pub fn window_image(hwnd: HWND) -> Option<String> {
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    (pid != 0).then(|| image_name(pid)).flatten()
+}
+
 /// The file name of a process's executable, e.g. `Code.exe`.
 fn image_name(pid: u32) -> Option<String> {
     unsafe {
@@ -512,7 +519,7 @@ fn image_name(pid: u32) -> Option<String> {
 /// asked for.
 ///
 /// No input is ever synthesised (no SendInput "Alt" trick).
-fn activate(hwnd: isize) -> Result<&'static str, String> {
+pub fn activate(hwnd: isize) -> Result<&'static str, String> {
     let (tx, rx) = mpsc::channel();
     // Its own thread: AttachThreadInput ties *this* thread's input to another
     // one's. A short-lived thread that does nothing else cannot be wedged by a
