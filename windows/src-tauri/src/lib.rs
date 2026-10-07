@@ -201,13 +201,13 @@ async fn open_session(
 ) -> Result<vscode::Outcome, String> {
     // Input the window step would refuse is refused before anything is asked.
     let kind = vscode::session_kind(wsl_distro.as_deref());
-    let hint = match session_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
-        Some(id) if vscode::refusal(cwd.as_deref(), wsl_distro.as_deref()).is_none() => terminals.hint(id),
+    let mut hint = None;
+    let shown = match session_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) if vscode::refusal(cwd.as_deref(), wsl_distro.as_deref()).is_none() => {
+            hint = terminals.hint(id);
+            terminal::show_terminal(hint.clone(), kind).await
+        }
         _ => None,
-    };
-    let shown = match hint.clone() {
-        Some(hint) => terminal::show_terminal(Some(hint), kind).await,
-        None => None,
     };
     // No VS Code terminal claimed it: a session typed into cmd or PowerShell
     // gets its own console window brought forward (console.rs).
