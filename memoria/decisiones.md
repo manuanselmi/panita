@@ -566,3 +566,38 @@ primera respuesta de la API, y solo mientras la ventana no se reinició. Los hoo
 falta la `statusLine`. Si una versión futura de Claude Code deja de pasar `rate_limits` a la
 status line, la barra se queda oculta sin que nada falle. Con la isla oculta no se gasta CPU: un
 solo timer al reinicio de la ventana redibuja la barra.
+
+## D-021 — ↗ trae al frente la consola de una sesión abierta en cmd o PowerShell
+
+**Fecha:** 2026-10-07 · **Estado:** vigente
+
+**Contexto.** Hay sesiones de Claude Code que se abren en una consola común (cmd o PowerShell, en
+Windows Terminal o en la consola clásica), no en una terminal de VS Code. Para esas, ↗ / "Open
+terminal" abría la carpeta del proyecto en VS Code, que no es donde está la sesión.
+
+**Decisión.** Si ninguna terminal de VS Code reclama la sesión, `console.rs` recorre la ascendencia
+Windows que manda el relay, se engancha un instante (`AttachConsole`) a la consola de cada ancestro,
+pregunta qué ventana la muestra (para Windows Terminal, la ventana dueña de la pestaña) y trae al
+frente la primera visible. Si no encuentra ninguna, sigue el paso de VS Code de siempre. Una ventana
+de VS Code nunca se elige acá.
+
+**Descartadas.** *Traer la pestaña exacta de Windows Terminal*: Windows Terminal no expone qué
+pestaña tiene un proceso; la ventana sale en la pestaña que esté mostrando.
+
+**Consecuencias.** Funciona solo en el build de release (sin consola propia); un build de debug
+lanzado desde una terminal no encuentra nada y cae a VS Code. Que traiga la ventana correcta en la
+máquina real es `[A VERIFICAR]` hasta que se pruebe a mano con una sesión en cmd. Commits `c9592b4`
+y `ed293c0` en `cmd-terminal-focus`.
+
+## D-022 — Se saca la barra de contexto de la tarjeta de la izquierda
+
+**Fecha:** 2026-10-07 · **Estado:** vigente
+
+**Contexto.** `75c950e` agregó, en la tarjeta de la izquierda, una barra con cuánto de la ventana
+de contexto usa esa sesión (de la misma status line que el medidor de uso, D-020).
+
+**Decisión.** Se saca: al probarla en uso real sobra. Se revierte `75c950e` entero (`8e80e97`);
+el medidor de uso de 5 horas queda como estaba en `0e53c9d`.
+
+**Consecuencias.** La app ya no emite el evento `context` ni guarda `context` en las sesiones. La
+status line instalada no cambia (es la misma de D-020). No reabrir sin un dato nuevo.

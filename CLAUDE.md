@@ -42,11 +42,11 @@ Lo que el fork agregó sobre upstream (detalle y porqués en `memoria/decisiones
 
 ## Estado: en uso diario
 
-`main` es lo que está instalado en la máquina de Manuel. Estado al 2026-10-06:
+`main` es lo que está instalado en la máquina de Manuel. Estado al 2026-10-07 (salvo la fila App, que va un paso adelante hasta el merge):
 
 | Qué | Dónde | Estado |
 |---|---|---|
-| App | `%LOCALAPPDATA%\Coucou\` (instalador NSIS por usuario, sin admin) | Instalada desde `main` `0e53c9d` (barra de uso con cuenta regresiva, D-020) |
+| App | `%LOCALAPPDATA%\Coucou\` (instalador NSIS por usuario, sin admin) | Instalada desde `cmd-terminal-focus` `ed293c0`: `main` + consola de cmd en ↗ (D-021), sin barra de contexto (D-022) |
 | Hooks Windows | `%USERPROFILE%\.claude\settings.json` | Instalados (relay en `%LOCALAPPDATA%\Coucou\bin`), con la `statusLine` de la barra de uso (D-020) |
 | Hooks WSL | `~/.claude/settings.json` de `Ubuntu-24.04` | Instalados, con `--wsl-ppid` y la `statusLine` (D-020) |
 | Extensión VS Code | `coucou.terminal-focus` 0.1.0 | Instalada (por CLI) |
