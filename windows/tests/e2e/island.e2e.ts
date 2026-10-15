@@ -25,6 +25,8 @@ import {
   type HookRun,
   type RealInstall,
   type RunningApp,
+  WS_EX,
+  islandWindow,
   launchApp,
   pipeNames,
   readSideLog,
@@ -535,6 +537,44 @@ describe(`side instance "${INSTANCE}"`, () => {
     } finally {
       await page.emit("tray", "pause"); // and back
     }
+  });
+
+  it("the island stays a non-activating tool window whenever its click-through flips", async () => {
+    // Regression: tao rewrites the island's whole extended style from its own
+    // flags every time one of them changes — click-through among them, flipped
+    // by the cursor poll and by set_collapsed — and that used to wipe
+    // WS_EX_TOOLWINDOW and WS_EX_NOACTIVATE within seconds of launch
+    // (island.rs, make_non_activating). Read with Win32 from outside the app.
+    // The chat's focus path (focus_window(true)) is left out on purpose: it
+    // takes the keyboard focus. The unit tests cover its bits.
+    const style = () => islandWindow(app.pid).exStyle;
+    const has = (ex: number, bit: number) => (ex & bit) === bit;
+    const names = (ex: number) => Object.entries(WS_EX).filter(([, bit]) => has(ex, bit)).map(([name]) => name);
+    const height = async () =>
+      (await page.invoke<{ width: number; height: number }>("plugin:window|outer_size", { label: "island" })).height;
+
+    await page.emit("tray", "pause"); // hides the island; 420 ms later the window drops to the wake strip
+    try {
+      await waitFor("the window to drop to the wake strip", async () => (await height()) < 50, 5_000);
+      await sleep(300); // set_collapsed's click-through change, and the poll's last tick, land
+      expect(names(style())).toEqual(expect.arrayContaining(["TOOLWINDOW", "NOACTIVATE"]));
+    } finally {
+      await page.emit("tray", "pause"); // and back
+    }
+
+    await waitFor("the window to grow back to the panel", async () => (await height()) >= 50, 5_000);
+    await sleep(300);
+    // Back on the panel, the cursor poll's first tick makes it click-through
+    // around the island. WS_EX_TRANSPARENT only ever comes from tao writing
+    // the whole extended style, so seeing it proves such a write happened
+    // after the app set its own bits. Should the pointer sit on the island the
+    // whole time, it never shows, and this fails rather than passing without
+    // having checked anything.
+    const open = await waitFor("the cursor poll to make the panel click-through (is the pointer parked on the island?)", () => {
+      const ex = style();
+      return has(ex, WS_EX.TRANSPARENT) ? ex : null;
+    }, 10_000, 250);
+    expect(names(open)).toEqual(expect.arrayContaining(["TOOLWINDOW", "NOACTIVATE", "TRANSPARENT", "LAYERED"]));
   });
 
   it("Stop opens the finished card", async () => {

@@ -6,7 +6,7 @@ the fourth moves the mouse and is opt-in.
 
 | Layer | Command | What it covers | Time |
 |---|---|---|---|
-| Rust unit tests | `npm run test:rust` | Relay output JSON and arguments (`--wsl-distro`, `--wsl-ppid`), the relay's ancestry walk (synthetic process tables, and the real one against a Toolhelp snapshot), instance names, pipe naming, the permission decision path, settings.json merging and writing for Windows and WSL targets — including an install that predates `--wsl-ppid` reading as outdated and its update —, WSL helpers (distro names, `wsl -l` decoding, probe parsing, `/proc/<pid>/stat` parsing and the Linux chain, `\wsl.localhost` paths, shell quoting), terminal focus (what is remembered per session, the extension's pipe names, request and reply), the VS Code window matcher and "open" plan (with and without a terminal the extension showed), folder-URI encoding, the extension's status (`code --list-extensions` parsing, versions), window enumeration, file ingest, the git branch for the approval card (`git.rs`: parsing, which folders are asked about, the folder passed as an argument of its own, this checkout's branch) | ~1 min cold, seconds warm |
+| Rust unit tests | `npm run test:rust` | Relay output JSON and arguments (`--wsl-distro`, `--wsl-ppid`), the relay's ancestry walk (synthetic process tables, and the real one against a Toolhelp snapshot), instance names, pipe naming, the permission decision path, settings.json merging and writing for Windows and WSL targets — including an install that predates `--wsl-ppid` reading as outdated and its update —, WSL helpers (distro names, `wsl -l` decoding, probe parsing, `/proc/<pid>/stat` parsing and the Linux chain, `\wsl.localhost` paths, shell quoting), terminal focus (what is remembered per session, the extension's pipe names, request and reply), the VS Code window matcher and "open" plan (with and without a terminal the extension showed), folder-URI encoding, the extension's status (`code --list-extensions` parsing, versions), window enumeration, the island's extended style (always a tool window, non-activating unless the chat asked for focus, whatever writes it — the bits, and the subclass on a hidden window of its own), file ingest, the git branch for the approval card (`git.rs`: parsing, which folders are asked about, the folder passed as an argument of its own, this checkout's branch) | ~1 min cold, seconds warm |
 | TypeScript unit tests | `npm run test:unit` | `hooks.ts` (step labels, approval target, every hook event → its session, several sessions at once, where each "Open" goes, the approval card's explanation and its branch filled in later, first prompts, same-name numbering), `state.ts` + `sessions.ts` + `layout.ts` (session creation, order and its dwell, approval and click promotion, `SessionEnd` and expiry, colours, same-name numbers, the panitas, their grid at every count and the "+N", integrations after the sessions, default view), `explain.ts` (the command dictionary rule by rule, chains, unknown commands, dangerous flags, the branch it may name, the command-line splitter and option reader), `bridge.ts` (`openSession` and hook-target command names and arguments); type-checks the tests, `bridge.ts` (`openSession`, hook-target and extension command names and arguments), the companion VS Code extension (its pipe protocol, terminal matching, malformed input, and its `vscode` glue against a stand-in `vscode` module); type-checks the tests | seconds |
 | End to end | `npm run test:e2e` | The real `coucou-hook.exe` → named pipe → the real app → the island webview and back, driven over CDP — from Windows and from inside WSL — plus the settings window's hook install flow in a sandbox home, and the island's ↗ asking a fake VS Code window for the session's terminal, and the panitas grid, same-name sessions and the approval card's command explanation | ~3–5 min cold, ~1–2 min warm |
 | Real input | `npm run test:input` | Hover-to-reveal, a real click not stealing the foreground. **Moves the mouse** — see below | ~2 min |
@@ -118,10 +118,12 @@ walks run on made-up process tables (Windows PIDs and `/proc/<pid>/stat` lines,
 including command names with spaces and parentheses), and the relay's real
 walk is only checked on the test binary's own ancestry.
 
-Two tests touch the desktop, harmlessly. The window-enumeration test creates a
+Three tests touch the desktop, harmlessly. The window-enumeration test creates a
 handful of throwaway windows of its own — tool windows, off screen, shown
 without activation, one cloaked, one minimized — checks which are listed, and
-asserts the foreground window did not change. The batch-file test writes a
+asserts the foreground window did not change. The island-style test creates
+one hidden window of its own (never shown), puts the island's subclass on it,
+and writes extended styles to it the way tao does. The batch-file test writes a
 small `.cmd` to `%TEMP%` and runs it, to check a percent-encoded URI survives
 `%*` the way `code.cmd` forwards it.
 
@@ -259,6 +261,18 @@ What it does, in order:
      that appears once it recovers answers nobody;
    - a paused island (the tray's Pause, sent as the same `tray` event) →
      declined at once;
+   - **the island stays a non-activating tool window**: a Pause and its
+     resume take the window down to the wake strip and back, which flips
+     click-through off and on again — and tao rewrites the whole extended
+     style each time (`make_non_activating` in `island.rs`). After each, the
+     island's window, read from outside with Win32 (`EnumWindows` over the
+     side instance's PID, `GetWindowLongPtrW`; read only), still has
+     `WS_EX_TOOLWINDOW` and `WS_EX_NOACTIVATE`; on the panel
+     `WS_EX_TRANSPARENT | WS_EX_LAYERED` are back too, which is what proves
+     the rewrite happened. A pointer parked on the island the whole time
+     would keep click-through off and fail this rather than let it pass
+     unchecked. The chat's focus path is not driven (it takes the keyboard
+     focus): its bits are the Rust unit tests';
    - `Stop` → the finished card; `SessionEnd` → the session is gone;
    - **several sessions at once** (nine, one of them in WSL, one with a name
      too long for its panita), added one by one: who is on the left card, and
@@ -510,7 +524,8 @@ judge looks. These stay manual (or in the opt-in real-input scaffold):
 - **Hover-to-reveal** at the top edge: the wake strip only reacts to the real
   pointer entering the window.
 - **Which window ends up in the foreground** after a real click on the island
-  (`WS_EX_NOACTIVATE`), and keyboard focus for the chat field.
+  (`WS_EX_NOACTIVATE` — the end-to-end suite checks the bit is there, not what
+  a click does with it), and keyboard focus for the chat field.
 - **Click-through** outside the island shape (decided in Rust from the real
   cursor position).
 - **Drag and drop from Explorer** — `dev/upload-preview.html` replays the drop

@@ -600,6 +600,8 @@ pub fn run() {
             create_settings_window(&handle);
 
             if let Some(win) = island::window(&handle) {
+                // Here, on the main thread — the window's own — or the subclass
+                // that keeps the style is refused.
                 island::make_non_activating(&win);
                 island::apply_geometry(&handle, false);
                 let _ = win.show();

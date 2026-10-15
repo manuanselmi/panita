@@ -160,6 +160,77 @@ export function webviewProcesses(userDataDir: string): Proc[] {
 }
 
 /** The account SID, which the relay pipe name carries. */
+/** Extended window style bits (winuser.h) the island's window is checked for. */
+export const WS_EX = {
+  TOPMOST: 0x0000_0008,
+  TRANSPARENT: 0x0000_0020,
+  TOOLWINDOW: 0x0000_0080,
+  APPWINDOW: 0x0004_0000,
+  LAYERED: 0x0008_0000,
+  NOACTIVATE: 0x0800_0000,
+} as const;
+
+export interface TopWindow {
+  hwnd: number;
+  title: string;
+  className: string;
+  visible: boolean;
+  /** GWL_EXSTYLE, as GetWindowLongPtrW reads it. */
+  exStyle: number;
+}
+
+/**
+ * The top-level windows of process `pid`, with their extended style. Read
+ * only: EnumWindows and GetWindowLongPtrW, which work across processes and
+ * change nothing — no focus, no input, no window touched.
+ */
+export function topLevelWindows(pid: number): TopWindow[] {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`not a PID: ${pid}`);
+  const script = `
+Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class E2eWindows {
+  delegate bool EnumProc(IntPtr hwnd, IntPtr lp);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr lp);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr hwnd, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr hwnd, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
+  public static List<object[]> Of(uint pid) {
+    var found = new List<object[]>();
+    EnumWindows((h, _) => {
+      uint owner;
+      GetWindowThreadProcessId(h, out owner);
+      if (owner == pid) {
+        var title = new StringBuilder(256);
+        GetWindowTextW(h, title, title.Capacity);
+        var cls = new StringBuilder(256);
+        GetClassNameW(h, cls, cls.Capacity);
+        found.Add(new object[] { h.ToInt64(), title.ToString(), cls.ToString(), IsWindowVisible(h), GetWindowLongPtr(h, -20).ToInt64() & 0xFFFFFFFFL });
+      }
+      return true;
+    }, IntPtr.Zero);
+    return found;
+  }
+}
+"@
+[E2eWindows]::Of(${pid}) | ForEach-Object { [pscustomobject]@{ hwnd = $_[0]; title = $_[1]; className = $_[2]; visible = $_[3]; exStyle = $_[4] } }`;
+  return powershellJson<TopWindow>(script);
+}
+
+/** The island's window in process `pid`: the Tauri window titled "Coucou" (Settings has a title of its own). */
+export function islandWindow(pid: number): TopWindow {
+  const found = topLevelWindows(pid).filter((w) => w.title === "Coucou" && w.className === "Tauri Window");
+  if (found.length !== 1) {
+    throw new Error(`expected one island window in PID ${pid}, found ${JSON.stringify(found)}`);
+  }
+  return found[0];
+}
+
 export function userSid(): string {
   const whoami = path.join(requiredEnv("SystemRoot"), "System32", "whoami.exe");
   const r = spawnSync(whoami, ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });

@@ -16,13 +16,14 @@ use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize
 
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::core::BOOL;
-use windows::Win32::Foundation::LPARAM;
+use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Ole::RevokeDragDrop;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{EnumChildWindows, GetClassNameW};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW,
+    GetCursorPos, GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, STYLESTRUCT, WM_NCDESTROY,
+    WM_STYLECHANGING, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
 /// Logical size of the full window — the largest island view, like the macOS panel.
@@ -503,28 +504,114 @@ fn hwnd_of(win: &WebviewWindow) -> Option<HWND> {
     Some(HWND(raw as *mut _))
 }
 
-/// WS_EX_NOACTIVATE keeps clicks from stealing focus; WS_EX_TOOLWINDOW keeps the
-/// island out of Alt-Tab.
-pub fn make_non_activating(win: &WebviewWindow) {
-    let Some(hwnd) = hwnd_of(win) else { return };
-    unsafe {
-        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let want = ex | WS_EX_NOACTIVATE.0 as isize | WS_EX_TOOLWINDOW.0 as isize;
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want);
+// ── A non-activating tool window ────────────────────────────────────────────
+
+/// True while the chat has asked for keyboard focus (`set_activating(true)`):
+/// the only time the island may go without WS_EX_NOACTIVATE.
+static ACTIVATING: AtomicBool = AtomicBool::new(false);
+
+/// Our subclass of the island window. comctl32 tells subclasses apart by their
+/// procedure and id together; wry has subclasses of its own on the same window.
+const STYLE_SUBCLASS_ID: usize = 0xC0C0;
+
+/// The extended style the island must have, given the one about to be written:
+/// WS_EX_TOOLWINDOW always, WS_EX_NOACTIVATE unless the chat has asked for
+/// focus. Every other bit — click-through's WS_EX_TRANSPARENT | WS_EX_LAYERED,
+/// WS_EX_TOPMOST — stays as asked: those are tao's.
+pub fn island_ex_style(requested: u32, activating: bool) -> u32 {
+    let ex = requested | WS_EX_TOOLWINDOW.0;
+    if activating {
+        ex & !WS_EX_NOACTIVATE.0
+    } else {
+        ex | WS_EX_NOACTIVATE.0
     }
 }
 
-/// Temporarily allow activation so a text field inside the island can be typed in.
-pub fn set_activating(win: &WebviewWindow, activating: bool) {
-    let Some(hwnd) = hwnd_of(win) else { return };
+/// The island window's subclass procedure, on the window's own thread.
+///
+/// Every `SetWindowLong(GWL_EXSTYLE, …)`, whoever makes it, first sends the
+/// window WM_STYLECHANGING with the proposed style in a STYLESTRUCT, and what is
+/// left in `styleNew` when the message returns is what gets stored. It is
+/// edited after the rest of the chain (wry's subclasses, tao's window
+/// procedure) has seen it, so ours is the last word.
+unsafe extern "system" fn keep_island_styles(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    if msg == WM_NCDESTROY {
+        // comctl32 wants every subclass gone before the window is.
+        let _ = unsafe { RemoveWindowSubclass(hwnd, Some(keep_island_styles), STYLE_SUBCLASS_ID) };
+        return unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+    }
+    let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+    // wParam says which style is changing: GWL_EXSTYLE (-20) or GWL_STYLE (-16).
+    if msg == WM_STYLECHANGING && wparam.0 as isize == GWL_EXSTYLE.0 as isize && lparam.0 != 0 {
+        let change = unsafe { &mut *(lparam.0 as *mut STYLESTRUCT) };
+        change.styleNew = island_ex_style(change.styleNew, ACTIVATING.load(Ordering::SeqCst));
+    }
+    result
+}
+
+/// Writes the extended style `hwnd` must have right now. With the subclass in
+/// place it would be corrected on its way in anyway; computed here too so the
+/// write is right without it.
+fn apply_island_ex_style(hwnd: HWND) {
     unsafe {
-        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let want = if activating {
-            ex & !(WS_EX_NOACTIVATE.0 as isize)
-        } else {
-            ex | WS_EX_NOACTIVATE.0 as isize
-        };
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want);
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        let want = island_ex_style(ex, ACTIVATING.load(Ordering::SeqCst));
+        if want != ex {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want as isize);
+        }
+    }
+}
+
+/// Subclasses `hwnd` so its extended style keeps the island's bits, and applies
+/// them now. False if the subclass could not be installed — from any thread but
+/// the window's own, for one.
+fn keep_styles(hwnd: HWND) -> bool {
+    let subclassed = unsafe { SetWindowSubclass(hwnd, Some(keep_island_styles), STYLE_SUBCLASS_ID, 0) }.as_bool();
+    apply_island_ex_style(hwnd);
+    subclassed
+}
+
+/// Makes the island a non-activating tool window, and keeps it one.
+///
+/// WS_EX_NOACTIVATE keeps a click on the island from taking the foreground —
+/// and the keyboard focus — from whatever the user is typing in;
+/// WS_EX_TOOLWINDOW makes it a tool window for the shell rather than an app
+/// window.
+///
+/// Setting them once is not enough. tao keeps flags of its own for the window
+/// and, every time one of them changes, writes the *whole* extended style from
+/// them (`WindowFlags::apply_diff` → `SetWindowLongW(GWL_EXSTYLE, …)` in
+/// tao's `window_state.rs`), and these two bits are not among them.
+/// Click-through is: the cursor poll flips it every time the pointer enters or
+/// leaves the island, and `set_collapsed` on every hide and show, so both bits
+/// used to be gone within seconds of launch — the island took the focus on
+/// every click. So the window is subclassed, and every extended style written
+/// to it, by tao or anyone, is corrected on its way in (`keep_island_styles`).
+///
+/// Must run on the window's own thread, which is the only one
+/// `SetWindowSubclass` accepts: `setup`, on the main thread.
+pub fn make_non_activating(win: &WebviewWindow) {
+    let Some(hwnd) = hwnd_of(win) else { return };
+    if !keep_styles(hwnd) {
+        crate::log::line("island: could not subclass the window — tao will undo its tool-window styles".to_string());
+    }
+}
+
+/// Lets the island be activated — and so take the keyboard focus — while the
+/// chat's text field is up, and takes that back after. The flag is stored
+/// before the style is written: the subclass reads it for this write and for
+/// every one tao makes later.
+pub fn set_activating(win: &WebviewWindow, activating: bool) {
+    ACTIVATING.store(activating, Ordering::SeqCst);
+    if let Some(hwnd) = hwnd_of(win) {
+        apply_island_ex_style(hwnd);
     }
 }
 
@@ -759,5 +846,122 @@ mod tests {
         let mut p = Press::new(1800.0, FHD - 144.0, display(0, FHD, 1.0));
         assert_eq!(p.step(1000.0, true), PressStep::Start(960.0)); // 976: 16 px off
         assert_eq!(p.step(1000.0, false), PressStep::End(960.0));
+    }
+
+    // ── The island's extended style ─────────────────────────────────────────
+
+    use windows::Win32::UI::WindowsAndMessaging::{
+        WS_EX_ACCEPTFILES, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+        WS_EX_WINDOWEDGE,
+    };
+
+    const OURS: u32 = WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0;
+    const CLICK_THROUGH: u32 = WS_EX_TRANSPARENT.0 | WS_EX_LAYERED.0;
+
+    /// The whole extended style tao writes for the island
+    /// (`WindowFlags::to_window_styles` in tao 0.37), click-through on or off.
+    /// Neither of our two bits is in it.
+    fn tao_writes(click_through: bool) -> u32 {
+        let ex = (WS_EX_WINDOWEDGE | WS_EX_ACCEPTFILES | WS_EX_APPWINDOW | WS_EX_TOPMOST).0;
+        if click_through {
+            ex | CLICK_THROUGH
+        } else {
+            ex
+        }
+    }
+
+    #[test]
+    fn the_island_is_always_a_tool_window() {
+        for click_through in [false, true] {
+            for activating in [false, true] {
+                let ex = island_ex_style(tao_writes(click_through), activating);
+                assert_ne!(ex & WS_EX_TOOLWINDOW.0, 0, "click-through {click_through}, activating {activating}");
+            }
+        }
+        assert_ne!(island_ex_style(0, true) & WS_EX_TOOLWINDOW.0, 0);
+    }
+
+    #[test]
+    fn the_island_never_activates_unless_the_chat_asked_for_focus() {
+        for click_through in [false, true] {
+            let tao = tao_writes(click_through);
+            assert_ne!(island_ex_style(tao, false) & WS_EX_NOACTIVATE.0, 0);
+            // The chat's field is up: tao's next write leaves the island activatable…
+            assert_eq!(island_ex_style(tao, true) & WS_EX_NOACTIVATE.0, 0);
+            // …and so does any write that still carries the bit from before.
+            assert_eq!(island_ex_style(tao | WS_EX_NOACTIVATE.0, true) & WS_EX_NOACTIVATE.0, 0);
+            // The chat closes: non-activating again, whatever was asked.
+            let during = island_ex_style(tao, true);
+            assert_ne!(island_ex_style(during, false) & WS_EX_NOACTIVATE.0, 0);
+        }
+    }
+
+    #[test]
+    fn every_other_bit_is_left_as_tao_asked() {
+        for click_through in [false, true] {
+            for activating in [false, true] {
+                let tao = tao_writes(click_through);
+                assert_eq!(island_ex_style(tao, activating) & !OURS, tao & !OURS);
+            }
+        }
+    }
+
+    /// The subclass on a real window: a hidden STATIC window of the test's own —
+    /// never shown, so never on screen and never focused — whose extended style
+    /// is written the way tao writes the island's. Creating it, subclassing it
+    /// and writing to it all happen on the test's thread, the window's own.
+    #[test]
+    fn the_subclass_corrects_every_extended_style_written_to_the_window() {
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP};
+
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("coucou-island-style-test"),
+                WS_POPUP,
+                -32000,
+                -32000,
+                8,
+                8,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .unwrap();
+        let read = || unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 };
+        let write = |ex: u32| unsafe { SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex as isize) };
+
+        // Without the subclass a write is stored as is — what happened to the island.
+        write(tao_writes(true) | OURS);
+        write(tao_writes(false));
+        assert_eq!(read() & OURS, 0);
+
+        assert!(keep_styles(hwnd), "SetWindowSubclass refused");
+        assert_eq!(read() & OURS, OURS, "applied as soon as the subclass is in");
+        for click_through in [true, false, true] {
+            write(tao_writes(click_through));
+            assert_eq!(read() & OURS, OURS, "after tao's write, click-through {click_through}");
+            assert_eq!(read() & CLICK_THROUGH, tao_writes(click_through) & CLICK_THROUGH);
+        }
+
+        // The chat's focus path, as set_activating does it: the flag, then a write.
+        ACTIVATING.store(true, Ordering::SeqCst);
+        apply_island_ex_style(hwnd);
+        assert_eq!(read() & WS_EX_NOACTIVATE.0, 0, "the chat asked for focus");
+        write(tao_writes(false));
+        assert_eq!(read() & OURS, WS_EX_TOOLWINDOW.0, "tao's write while the chat is up");
+        ACTIVATING.store(false, Ordering::SeqCst);
+        apply_island_ex_style(hwnd);
+        assert_eq!(read() & OURS, OURS, "the chat closed");
+        write(tao_writes(true));
+        assert_eq!(read() & OURS, OURS);
+
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
     }
 }

@@ -33,5 +33,7 @@ windows = { version = "0.61", features = [
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",
+  # comctl32's SetWindowSubclass, which keeps the island's extended style (island.rs).
+  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
