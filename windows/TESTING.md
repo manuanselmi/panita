@@ -273,6 +273,8 @@ What it does, in order:
      would keep click-through off and fail this rather than let it pass
      unchecked. The chat's focus path is not driven (it takes the keyboard
      focus): its bits are the Rust unit tests';
+   - a `visibilitychange` on the island's page (the event alone, dispatched
+     in the page) → `ui  visibility visible` in the side instance's log;
    - `Stop` → the finished card; `SessionEnd` → the session is gone;
    - **several sessions at once** (nine, one of them in WSL, one with a name
      too long for its panita), added one by one: who is on the left card, and

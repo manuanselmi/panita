@@ -577,6 +577,17 @@ describe(`side instance "${INSTANCE}"`, () => {
     expect(names(open)).toEqual(expect.arrayContaining(["TOOLWINDOW", "NOACTIVATE", "TRANSPARENT", "LAYERED"]));
   });
 
+  it("a visibilitychange on the island's page is logged", async () => {
+    // The real one takes minimizing or covering windows; the event alone
+    // proves the wiring, page → log_line → the side instance's log.
+    const from = readSideLog().length;
+    const state = await cdp.evaluate<string>(`(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      return document.visibilityState;
+    })()`);
+    await waitForLog(new RegExp(`ui  visibility ${state}`), 5_000, from);
+  });
+
   it("Stop opens the finished card", async () => {
     const from = readSideLog().length;
     const run = await runHook("Stop", base({ stop_hook_active: false }));

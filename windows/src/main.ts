@@ -12,6 +12,14 @@ async function main() {
   const root = document.getElementById("root");
   if (!root) return;
 
+  // Diagnostic: the island sometimes stops being drawn until some unrelated
+  // window is minimized or restored. If WebView2 is deciding the page is not
+  // visible, the log shows it — `ui  visibility hidden` / `visible`, one line
+  // per change, nothing periodic.
+  document.addEventListener("visibilitychange", () => {
+    void Bridge.log(`visibility ${document.visibilityState}`);
+  });
+
   void Sound.preload();
 
   const island = new Island(root);

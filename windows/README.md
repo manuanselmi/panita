@@ -288,7 +288,9 @@ windows/
 `%LOCALAPPDATA%\Coucou\coucou.log` — hook events (tagged `wsl=<distro>` for
 sessions inside WSL), permission decisions, what each ↗ did (`terminal "<tab>"
 focused`, `no extension answered`, which window came forward), poller
-problems. It stays on your machine.
+problems, and every time the island's page goes hidden or visible for WebView2
+(`ui  visibility hidden` / `ui  visibility visible` — a diagnostic for an
+island that stops being drawn). It stays on your machine.
 
 ## What's different from the Mac version
 
