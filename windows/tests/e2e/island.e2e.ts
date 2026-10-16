@@ -557,7 +557,9 @@ describe(`side instance "${INSTANCE}"`, () => {
     try {
       await waitFor("the window to drop to the wake strip", async () => (await height()) < 50, 5_000);
       await sleep(300); // set_collapsed's click-through change, and the poll's last tick, land
-      expect(names(style())).toEqual(expect.arrayContaining(["TOOLWINDOW", "NOACTIVATE"]));
+      const collapsed = names(style());
+      expect(collapsed).toEqual(expect.arrayContaining(["TOOLWINDOW", "NOACTIVATE"]));
+      expect(collapsed).not.toContain("APPWINDOW"); // which would override them for the shell
     } finally {
       await page.emit("tray", "pause"); // and back
     }
@@ -575,6 +577,7 @@ describe(`side instance "${INSTANCE}"`, () => {
       return has(ex, WS_EX.TRANSPARENT) ? ex : null;
     }, 10_000, 250);
     expect(names(open)).toEqual(expect.arrayContaining(["TOOLWINDOW", "NOACTIVATE", "TRANSPARENT", "LAYERED"]));
+    expect(names(open)).not.toContain("APPWINDOW");
   });
 
   it("a visibilitychange on the island's page is logged", async () => {

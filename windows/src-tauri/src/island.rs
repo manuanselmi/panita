@@ -23,7 +23,7 @@ use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindow
 use windows::Win32::UI::WindowsAndMessaging::{EnumChildWindows, GetClassNameW};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, STYLESTRUCT, WM_NCDESTROY,
-    WM_STYLECHANGING, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WM_STYLECHANGING, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
 /// Logical size of the full window — the largest island view, like the macOS panel.
@@ -515,11 +515,17 @@ static ACTIVATING: AtomicBool = AtomicBool::new(false);
 const STYLE_SUBCLASS_ID: usize = 0xC0C0;
 
 /// The extended style the island must have, given the one about to be written:
-/// WS_EX_TOOLWINDOW always, WS_EX_NOACTIVATE unless the chat has asked for
-/// focus. Every other bit — click-through's WS_EX_TRANSPARENT | WS_EX_LAYERED,
-/// WS_EX_TOPMOST — stays as asked: those are tao's.
+/// WS_EX_TOOLWINDOW always and WS_EX_APPWINDOW never, WS_EX_NOACTIVATE unless
+/// the chat has asked for focus. Every other bit — click-through's
+/// WS_EX_TRANSPARENT | WS_EX_LAYERED, WS_EX_TOPMOST — stays as asked: those
+/// are tao's.
+///
+/// WS_EX_APPWINDOW is tao's too — it gives it to every window without a parent —
+/// but it "forces a top-level window onto the taskbar", and the documentation
+/// of both WS_EX_TOOLWINDOW and WS_EX_NOACTIVATE names it as the way to
+/// override them: with it, the island would still be an app window to the shell.
 pub fn island_ex_style(requested: u32, activating: bool) -> u32 {
-    let ex = requested | WS_EX_TOOLWINDOW.0;
+    let ex = (requested | WS_EX_TOOLWINDOW.0) & !WS_EX_APPWINDOW.0;
     if activating {
         ex & !WS_EX_NOACTIVATE.0
     } else {
@@ -582,8 +588,9 @@ fn keep_styles(hwnd: HWND) -> bool {
 ///
 /// WS_EX_NOACTIVATE keeps a click on the island from taking the foreground —
 /// and the keyboard focus — from whatever the user is typing in;
-/// WS_EX_TOOLWINDOW makes it a tool window for the shell rather than an app
-/// window.
+/// WS_EX_TOOLWINDOW, without the WS_EX_APPWINDOW that would override it, makes
+/// it a tool window for the shell rather than an app window: no taskbar button,
+/// not in Alt-Tab.
 ///
 /// Setting them once is not enough. tao keeps flags of its own for the window
 /// and, every time one of them changes, writes the *whole* extended style from
@@ -851,8 +858,7 @@ mod tests {
     // ── The island's extended style ─────────────────────────────────────────
 
     use windows::Win32::UI::WindowsAndMessaging::{
-        WS_EX_ACCEPTFILES, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-        WS_EX_WINDOWEDGE,
+        WS_EX_ACCEPTFILES, WS_EX_LAYERED, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_EX_WINDOWEDGE,
     };
 
     const OURS: u32 = WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0;
@@ -860,7 +866,8 @@ mod tests {
 
     /// The whole extended style tao writes for the island
     /// (`WindowFlags::to_window_styles` in tao 0.37), click-through on or off.
-    /// Neither of our two bits is in it.
+    /// Neither of our two bits is in it, and WS_EX_APPWINDOW, which would
+    /// override them, is.
     fn tao_writes(click_through: bool) -> u32 {
         let ex = (WS_EX_WINDOWEDGE | WS_EX_ACCEPTFILES | WS_EX_APPWINDOW | WS_EX_TOPMOST).0;
         if click_through {
@@ -876,6 +883,7 @@ mod tests {
             for activating in [false, true] {
                 let ex = island_ex_style(tao_writes(click_through), activating);
                 assert_ne!(ex & WS_EX_TOOLWINDOW.0, 0, "click-through {click_through}, activating {activating}");
+                assert_eq!(ex & WS_EX_APPWINDOW.0, 0, "click-through {click_through}, activating {activating}");
             }
         }
         assert_ne!(island_ex_style(0, true) & WS_EX_TOOLWINDOW.0, 0);
@@ -901,7 +909,8 @@ mod tests {
         for click_through in [false, true] {
             for activating in [false, true] {
                 let tao = tao_writes(click_through);
-                assert_eq!(island_ex_style(tao, activating) & !OURS, tao & !OURS);
+                let mine = OURS | WS_EX_APPWINDOW.0;
+                assert_eq!(island_ex_style(tao, activating) & !mine, tao & !mine);
             }
         }
     }
@@ -945,6 +954,7 @@ mod tests {
         for click_through in [true, false, true] {
             write(tao_writes(click_through));
             assert_eq!(read() & OURS, OURS, "after tao's write, click-through {click_through}");
+            assert_eq!(read() & WS_EX_APPWINDOW.0, 0, "after tao's write, click-through {click_through}");
             assert_eq!(read() & CLICK_THROUGH, tao_writes(click_through) & CLICK_THROUGH);
         }
 

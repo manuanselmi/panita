@@ -159,7 +159,6 @@ export function webviewProcesses(userDataDir: string): Proc[] {
   );
 }
 
-/** The account SID, which the relay pipe name carries. */
 /** Extended window style bits (winuser.h) the island's window is checked for. */
 export const WS_EX = {
   TOPMOST: 0x0000_0008,
@@ -231,6 +230,7 @@ export function islandWindow(pid: number): TopWindow {
   return found[0];
 }
 
+/** The account SID, which the relay pipe name carries. */
 export function userSid(): string {
   const whoami = path.join(requiredEnv("SystemRoot"), "System32", "whoami.exe");
   const r = spawnSync(whoami, ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
