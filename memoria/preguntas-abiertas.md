@@ -102,6 +102,24 @@ colgada. Además, `ask()` hace el Deny en un `finally`, así que si algo del `tr
 error queda tapado por el del Deny. Desbloquea: confiar en un rojo de esa suite; si se repite,
 leer el log de la instancia lateral antes de que el suite lo borre.
 
+**Se repitió, y más, el 2026-10-20** (en PowerShell, con Manuel usando la máquina). `main`
+`5fb8da9` sin cambios: 4 rojos de 76 ("a click on the header strip folds…" y el de la status line,
+esperando la isla compacta; "a bare git push…" y "rm -rf build is flagged", stdout vacío). La rama
+`session-names`, dos corridas: 3 rojos ("PermissionRequest → Allow" esperando que la isla se
+expanda, el de la status line con la barra de contexto fuera de lugar, el Allow de WSL con stdout
+vacío) y 2 ("PermissionRequest → Allow" con stdout vacío, el de la status line esperando "1m").
+Cada corrida rompe tests distintos, ninguno del camino que cambió la rama. `[CONFIRMADO]` que
+pasa en `main`; `[SUPUESTO]` que viene de los últimos cambios de la ventana (`8408dd9`,
+`5fb8da9`, herramienta no activable) o de la carga de la máquina. No se investigó.
+
+### O9. ¿La status line trae el título automático de la sesión, o solo el de `/rename`? (D-021)
+El binario de Claude Code 2.1.304 documenta `session_name` como "set via /rename"; el código
+minificado arma `customTitle ?? aiTitle` `[SUPUESTO]`. Si fuera solo `/rename`, las sesiones sin
+`/rename` (casi todas las de Manuel) seguirían con el nombre de la carpeta. `[A VERIFICAR]` en la
+máquina después de instalar: una sesión sin `/rename`, después de su primera respuesta, tiene que
+verse con el título que muestra `/resume`. Si no, la alternativa es leer la última línea
+`ai-title` del transcript (`transcript_path`, que traen todos los hooks).
+
 ## 🔵 Del producto
 
 ### N1. ¿Se publica algún día?

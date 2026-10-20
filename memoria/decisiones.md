@@ -89,7 +89,7 @@ subagentes con el mismo nombre se pisaron las carpetas.
 
 ## D-004 — Una sesión por `session_id`, ordenadas por actividad reciente
 
-**Fecha:** 2026-10-01 · **Estado:** vigente
+**Fecha:** 2026-10-01 · **Estado:** vigente, salvo "Nombre = carpeta", superado por D-021
 
 **Contexto.** Upstream tenía una única tarea para todas las sesiones: con varias, los pasos se
 mezclaban, el nombre saltaba y "Open" iba a la que habló última. Manuel tiene hasta ~5 sesiones
@@ -566,3 +566,51 @@ primera respuesta de la API, y solo mientras la ventana no se reinició. Los hoo
 falta la `statusLine`. Si una versión futura de Claude Code deja de pasar `rate_limits` a la
 status line, la barra se queda oculta sin que nada falle. Con la isla oculta no se gasta CPU: un
 solo timer al reinicio de la ventana redibuja la barra.
+
+---
+
+## D-021 — Cada sesión se llama como la llama Claude Code, por la status line
+
+**Fecha:** 2026-10-20 · **Estado:** vigente · supera la parte de D-004 que dice "Nombre = carpeta"
+
+**Contexto.** Manuel, con una captura de la isla (`struxto-especificador`, `panita`,
+`struxto-espe… 3`, `struxto-espe… 2`): necesita saber cuál sesión es cuál, y pidió que en vez
+del nombre del repo se vea "el nombre de esa sesión de Claude Code particular".
+
+Datos de esta sesión:
+- `[CONFIRMADO]` en los transcripts (`~/.claude/projects/*/<session_id>.jsonl`, Windows y WSL):
+  Claude Code guarda dos nombres por sesión, `{"type":"custom-title","customTitle":…}` (el de
+  `/rename`) y `{"type":"ai-title","aiTitle":…}` (un título que genera solo, uno por sesión y que
+  no cambia; 9 a 54 caracteres en esta máquina). Los vuelve a escribir al final del archivo en
+  cada turno. Manuel casi no usa `/rename`: sus sesiones de struxto tienen solo `ai-title`
+  ("Pintado de tabiques STR-161", "Homologación D e IM Knauf"…).
+- `[CONFIRMADO]` leyendo el binario de Claude Code 2.1.304 (Windows y WSL, la misma versión): el
+  JSON de la **status line** trae `session_name` (documentado como "Human-readable session name
+  set via /rename"). Los payloads de los hooks no traen ningún nombre.
+- `[SUPUESTO]`, del código minificado: `session_name` es el `customTitle` y, si no hay, el
+  `aiTitle` (`gg(e)??tX(e)` → `currentSessionTitle ?? currentSessionAiTitle`). No se vio una
+  status line real con un `ai-title`. Pregunta O9.
+
+**Decisión** (el pedido es de Manuel; la fuente y la forma las eligió Claude como default, sin
+discutirlas):
+- La app (`pipe.rs`, `session_name_of`) saca `session_name` de cada status line — en una línea,
+  hasta 100 caracteres — y le manda a la isla un evento `session-name` `{ sessionId, name }`. No
+  se loguea ni crea sesiones, igual que `usage` y `context` (D-020). No cambia el comando de la
+  `statusLine` ni los hooks: no hace falta **Update…**.
+- En la isla, ese nombre pasa a ser el `name` de la sesión en todas las tarjetas (izquierda,
+  panitas, permiso, pregunta, terminada). Hasta que llega, la sesión se llama por su carpeta, como
+  antes. Los hooks de la sesión no le devuelven el nombre de la carpeta; un `/rename` posterior lo
+  cambia.
+- La numeración de D-006 se aplica al nombre que se muestra: al recibir nombre, la sesión toma el
+  menor número libre para ese nombre (casi siempre ninguno); las demás conservan el suyo.
+- El color se sigue eligiendo por la carpeta al crear la sesión, y "↗ / Open" sigue usando la
+  carpeta y la terminal (nunca el nombre).
+- Agregado por Claude, sin que se pidiera (pendiente del OK de Manuel): en la tarjeta izquierda,
+  la palabra gris que seguía al nombre ("Claude Code") pasa a ser la carpeta cuando la sesión
+  tiene nombre propio. Se muestra entera o no se muestra: con nombres largos casi siempre queda
+  oculta. El tooltip sigue mostrando carpeta completa y primer prompt.
+
+**Consecuencias.** Con una `statusLine` ajena (D-020) las sesiones quedan con el nombre de la
+carpeta. Si Claude Code deja de mandar `session_name`, todo vuelve a la carpeta sin que nada
+falle. Los nombres largos se cortan con "…" en las panitas (~20 caracteres); el completo está en
+el tooltip.
