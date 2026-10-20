@@ -6,7 +6,7 @@
 
 import { Bridge, onEvent } from "../core/bridge";
 import { explainTool, resolveFolder } from "../core/explain";
-import { promptSummary, sessionKey } from "../core/sessions";
+import { parseSessionName, promptSummary, sessionKey } from "../core/sessions";
 import { Sound } from "../core/sound";
 import { parseContext, parseUsage } from "../core/usage";
 import {
@@ -163,6 +163,20 @@ export function registerHookHandlers(island: Island) {
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
   void onEvent<unknown>("usage", handleUsage);
   void onEvent<unknown>("context", handleContext);
+  void onEvent<unknown>("session-name", handleSessionName);
+}
+
+/**
+ * A session's own status line (pipe.rs): the name Claude Code has for it —
+ * its `/rename`, or the title Claude Code gave it after its first prompt. From
+ * then on every card calls it that instead of its folder. Like the context
+ * bar's, not a session event; one from a session the island does not know yet
+ * is dropped, and a later status line names it.
+ */
+function handleSessionName(payload: unknown) {
+  const parsed = parseSessionName(payload);
+  if (!parsed) return;
+  if (State.nameSession(sessionKey(parsed.sessionId, undefined), parsed.name)) State.notify();
 }
 
 /**

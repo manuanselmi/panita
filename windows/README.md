@@ -57,10 +57,16 @@ options, with **Open terminal** to go and answer it (see below); a finished
 session shows what it did; and every Claude Code session running — Windows or WSL — gets its own colour:
 the most recently active on the left with its steps, every other one as a
 small coloured Mochi — a *panita* — on the right, up to six (past six, the
-last one is a "+N"); click one to bring it to the left. Sessions in the same
-project are numbered in the order they started — `struxto-especificador`,
-`struxto-especificador 2`, `… 3` — and keep their number while they live;
-hovering a panita shows its folder and the first thing it was asked.
+last one is a "+N"); click one to bring it to the left. A session goes by the
+name Claude Code has for it — the one given with `/rename`, or else the title
+Claude Code writes for it after its first prompt, the one `/resume` lists
+(`Pintado de tabiques STR-161`) — and the left card adds its folder after the
+name when there is room. Claude Code hands that name to its status line, not to
+hooks (see **Usage** below), so it arrives with the session's first answer;
+until then a session is called after its folder. Sessions that read the same
+are numbered in the order they started — `struxto-especificador`,
+`struxto-especificador 2`, `… 3` — and keep their number while they keep the
+name; hovering a panita shows its folder and the first thing it was asked.
 Integrations are off by default; switched on in Settings, they join the
 panitas after the sessions.
 
@@ -118,7 +124,9 @@ red from 95 %; the tooltip gives the tokens, `Context: 614k of 1M tokens
 (61%)`). Every session's is kept, so clicking another panita brings its own up at
 once. It appears with a session's first status line after a message — Claude
 Code sends none before — and a session the island has not seen a hook event from
-yet is skipped until it has.
+yet is skipped until it has. The session's **name** (`session_name`, see above)
+comes the same way and is skipped the same way; with a `statusLine` of your own,
+sessions keep their folder's name.
 
 ## Claude Code
 

@@ -7,7 +7,7 @@ the fourth moves the mouse and is opt-in.
 | Layer | Command | What it covers | Time |
 |---|---|---|---|
 | Rust unit tests | `npm run test:rust` | Relay output JSON and arguments (`--wsl-distro`, `--wsl-ppid`), the relay's ancestry walk (synthetic process tables, and the real one against a Toolhelp snapshot), instance names, pipe naming, the permission decision path, settings.json merging and writing for Windows and WSL targets — including an install that predates `--wsl-ppid` reading as outdated and its update —, WSL helpers (distro names, `wsl -l` decoding, probe parsing, `/proc/<pid>/stat` parsing and the Linux chain, `\wsl.localhost` paths, shell quoting), terminal focus (what is remembered per session, the extension's pipe names, request and reply), the VS Code window matcher and "open" plan (with and without a terminal the extension showed), folder-URI encoding, the extension's status (`code --list-extensions` parsing, versions), window enumeration, the island's extended style (always a tool window and never an app window, non-activating unless the chat asked for focus, whatever writes it — the bits, and the subclass on a hidden window of its own), file ingest, the git branch for the approval card (`git.rs`: parsing, which folders are asked about, the folder passed as an argument of its own, this checkout's branch) | ~1 min cold, seconds warm |
-| TypeScript unit tests | `npm run test:unit` | `hooks.ts` (step labels, approval target, every hook event → its session, several sessions at once, where each "Open" goes, the approval card's explanation and its branch filled in later, first prompts, same-name numbering), `state.ts` + `sessions.ts` + `layout.ts` (session creation, order and its dwell, approval and click promotion, `SessionEnd` and expiry, colours, same-name numbers, the panitas, their grid at every count and the "+N", integrations after the sessions, default view), `explain.ts` (the command dictionary rule by rule, chains, unknown commands, dangerous flags, the branch it may name, the command-line splitter and option reader), `bridge.ts` (`openSession` and hook-target command names and arguments); type-checks the tests, `bridge.ts` (`openSession`, hook-target and extension command names and arguments), the companion VS Code extension (its pipe protocol, terminal matching, malformed input, and its `vscode` glue against a stand-in `vscode` module); type-checks the tests | seconds |
+| TypeScript unit tests | `npm run test:unit` | `hooks.ts` (step labels, approval target, every hook event → its session, several sessions at once, where each "Open" goes, the approval card's explanation and its branch filled in later, first prompts, same-name numbering, the session name from the status line), `state.ts` + `sessions.ts` + `layout.ts` (session creation, order and its dwell, approval and click promotion, `SessionEnd` and expiry, colours, same-name numbers, the panitas, their grid at every count and the "+N", integrations after the sessions, default view), `explain.ts` (the command dictionary rule by rule, chains, unknown commands, dangerous flags, the branch it may name, the command-line splitter and option reader), `bridge.ts` (`openSession` and hook-target command names and arguments); type-checks the tests, `bridge.ts` (`openSession`, hook-target and extension command names and arguments), the companion VS Code extension (its pipe protocol, terminal matching, malformed input, and its `vscode` glue against a stand-in `vscode` module); type-checks the tests | seconds |
 | End to end | `npm run test:e2e` | The real `coucou-hook.exe` → named pipe → the real app → the island webview and back, driven over CDP — from Windows and from inside WSL — plus the settings window's hook install flow in a sandbox home, and the island's ↗ asking a fake VS Code window for the session's terminal, and the panitas grid, same-name sessions and the approval card's command explanation | ~3–5 min cold, ~1–2 min warm |
 | Real input | `npm run test:input` | Hover-to-reveal, a real click not stealing the foreground. **Moves the mouse** — see below | ~2 min |
 
@@ -303,7 +303,10 @@ What it does, in order:
      in order of creation ("struxto-especificador", "… 2", "… 3"), the number
      whole when the name is cut, on the left card, the panitas, the approval
      and the finished card; the numbers stay when one ends, and a newcomer takes
-     the free one;
+     the free one; then two of them named through their status lines
+     (`session_name`, real relay): each card calls them by that name, with no
+     number, the left card has the folder after the name (whole or hidden), the
+     tooltips still give the folder and the first prompt, and nothing is logged;
    - **the explanation under the command**: approval cards for
      `git push origin main:dev`, `cd ../x && git commit -m "fix"`, a bare
      `git push`, `rm -rf build` (flagged), an unknown command (no line), a
@@ -450,7 +453,7 @@ settings are muted, with no integration switched on — the shipped default.
 Output lands in `test-results/e2e/` (git-ignored): screenshots of the island at
 each step (transparent PNGs of the 720×320 window — `10-sessions-2` to
 `18-sessions-9` for the right card at every count, `20-…` for same-name
-sessions, `30-…` for the explanations), `app-output.log`,
+sessions and `24-session-names` for named ones, `30-…` for the explanations), `app-output.log`,
 `side-instance.log` (the side instance's `coucou.log`), `island-console.log`,
 `build.log`, `sandbox-home/` (the settings files the install cases wrote, with
 their backups), `fake-code/` (the fake `code` and every call it got), and

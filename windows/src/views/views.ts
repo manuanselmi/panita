@@ -7,7 +7,7 @@ import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
 import { State, isSession, type AgentTask, type PillBadge } from "../core/state";
 import { CARD_TEXT_W, EXPLAIN_LINE_H, panitaGrid, washRGBA, type IslandViewName, type Wash } from "../core/layout";
-import { displayName, labelParts } from "../core/sessions";
+import { displayName, labelParts, sessionTag } from "../core/sessions";
 import { explanationText } from "../core/explain";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
@@ -249,15 +249,16 @@ function buildOverview(actions: ViewActions): ViewHost {
         const count = task.steps.length > 1
           ? `${Math.min(task.stepIndex + 1, task.steps.length)}/${task.steps.length}`
           : "";
-        const key = [task.id, task.name, task.ordinal, task.color, count, task.cwd, task.wslDistro, task.firstPrompt].join("~");
+        const key = [task.id, task.name, task.ordinal, task.folder, task.color, count, task.cwd, task.wslDistro, task.firstPrompt].join("~");
         if (key !== whoKey) {
           whoKey = key;
           clear(who);
           who.append(
             dot(task.color, 7),
             nameEl(task, "name"),
-            // "Claude Code" shows whole or not at all (style.css, .tool-slot).
-            h("span", { class: "tool-slot" }, h("i", { class: "tool-spacer" }), h("span", { class: "tool", text: "Claude Code" })),
+            // Its folder once it has a name of its own, else "Claude Code"
+            // (sessionTag): whole or not at all (style.css, .tool-slot).
+            h("span", { class: "tool-slot" }, h("i", { class: "tool-spacer" }), h("span", { class: "tool", text: sessionTag(task) })),
           );
           if (count) who.append(h("span", { class: "count", text: count }));
         }

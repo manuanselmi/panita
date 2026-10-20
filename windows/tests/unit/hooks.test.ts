@@ -483,6 +483,53 @@ describe("context (a session's own status line)", () => {
   });
 });
 
+describe("session name (a session's own status line)", () => {
+  it("names that session on every card, is not activity, and a session the island does not know is left alone", async () => {
+    const { State, send, names } = await load();
+    // Three terminals on one project, told apart only by number.
+    for (const id of ["a", "b", "c"]) send(work(id, "struxto-especificador", "ls"));
+    const [a, b, c] = ["a", "b", "c"].map((id) => State.sessions.find((s) => s.sessionId === id)!);
+    expect([a, b, c].map((s) => s.ordinal)).toEqual([1, 2, 3]);
+    const order = State.sessions.map((s) => s.id);
+    const before = { activity: c.lastActivity, event: c.lastEventAt };
+    const notify = vi.spyOn(State, "notify");
+    const handler = bridge.handlers.get("session-name");
+    if (!handler) throw new Error("hooks.ts never listened for `session-name`");
+
+    vi.advanceTimersByTime(5_000);
+    handler({ sessionId: "c", name: "Pintado de tabiques STR-161" });
+    expect(c).toMatchObject({
+      name: "Pintado de tabiques STR-161", ordinal: 1, folder: "struxto-especificador",
+      title: "Pintado de tabiques STR-161",
+    });
+    expect({ activity: c.lastActivity, event: c.lastEventAt }).toEqual(before);
+    expect(State.sessions.map((s) => s.id)).toEqual(order);
+    expect(notify).toHaveBeenCalledTimes(1);
+
+    // Every status line says it again: no news.
+    handler({ sessionId: "c", name: "Pintado de tabiques STR-161" });
+    expect(notify).toHaveBeenCalledTimes(1);
+    // The session's own hook events, from its folder, do not take it back.
+    send(work("c", "struxto-especificador", "ls"));
+    expect(c.name).toBe("Pintado de tabiques STR-161");
+
+    // A /rename later on is its name from then on.
+    handler({ sessionId: "c", name: "tabiques" });
+    expect(c.name).toBe("tabiques");
+
+    // Nobody the island knows, or nothing usable: nothing happens.
+    notify.mockClear();
+    handler({ sessionId: "zzz", name: "Otra" });
+    handler({ sessionId: "a", name: "  " });
+    handler({ sessionId: "a" });
+    handler({ name: "Otra" });
+    expect(State.sessions).toHaveLength(3);
+    expect(names().sort()).toEqual(["struxto-especificador", "struxto-especificador", "tabiques"]);
+    expect([a.ordinal, b.ordinal]).toEqual([1, 2]);
+    expect(notify).not.toHaveBeenCalled();
+  });
+});
+
 describe("folding the island over a permission card", () => {
   it("hands the request back to the terminal, clears the card and badges the session", async () => {
     const { State, send, only, island } = await load();

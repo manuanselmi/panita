@@ -135,16 +135,20 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
     };
 
     // Claude Code's status line (installed with the hooks): only the
-    // subscription's usage goes on, to the island's usage bar, and how full the
-    // session's context window is, to the left card. It refreshes every few
-    // seconds while a session works, so it is not logged, and it is not a
-    // session event — no session is created by it.
+    // subscription's usage goes on, to the island's usage bar, how full the
+    // session's context window is, to the left card, and the session's name,
+    // to every card that names it. It refreshes every few seconds while a
+    // session works, so it is not logged, and it is not a session event — no
+    // session is created by it.
     if event == STATUS_LINE {
         if let Some(usage) = usage_of(&payload) {
             let _ = app.emit_to(WINDOW_LABEL, "usage", usage);
         }
         if let Some(context) = context_of(&payload) {
             let _ = app.emit_to(WINDOW_LABEL, "context", context);
+        }
+        if let Some(name) = session_name_of(&payload) {
+            let _ = app.emit_to(WINDOW_LABEL, "session-name", name);
         }
         let _ = pipe.disconnect();
         return;
@@ -308,6 +312,40 @@ pub fn context_of(status: &Value) -> Option<Value> {
     }))
 }
 
+/// Longest session name passed on. Claude Code's own titles run 10–55
+/// characters; a `/rename` can be anything.
+const SESSION_NAME_MAX: usize = 100;
+
+/// The session's name, as Claude Code knows it: `session_name`, which is the
+/// one given with `/rename` or, failing that, the title Claude Code writes
+/// for the session itself after its first prompt (the name `/resume` lists) —
+/// `{ sessionId, name }`, the name on one line, at most SESSION_NAME_MAX
+/// characters. `None` until the session has a name, and for a status line
+/// without a session id.
+pub fn session_name_of(status: &Value) -> Option<Value> {
+    let session = status
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let raw = status.get("session_name").and_then(Value::as_str)?;
+    // One line: newlines, tabs and other control characters become spaces, and
+    // runs of spaces one.
+    let name = raw
+        .split(|c: char| c.is_whitespace() || c.is_control())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if name.is_empty() {
+        return None;
+    }
+    let name = match name.char_indices().nth(SESSION_NAME_MAX) {
+        Some((cut, _)) => name[..cut].trim_end().to_string(),
+        None => name,
+    };
+    Some(json!({ "sessionId": session, "name": name }))
+}
+
 /// Called by the island's Allow / Deny buttons. Only ever a bare word: turning
 /// it into Claude Code's JSON is coucou-hook's job.
 pub fn answer(app: &AppHandle, request_id: &str, decision: &str) {
@@ -404,6 +442,41 @@ mod tests {
             .unwrap(),
             json!({ "sessionId": "s", "usedPercentage": 100.0, "tokens": null, "windowSize": null })
         );
+    }
+
+    #[test]
+    fn the_cards_get_the_session_name_claude_code_gives_its_status_line() {
+        // Claude Code 2.1.304 sends `session_name` once the session has one:
+        // its /rename, else the title it wrote for the session.
+        let status = json!({
+            "session_id": "a1b2", "session_name": "Pintado de tabiques STR-161",
+            "cwd": "/home/manua/hekta/struxto-especificador",
+            "workspace": { "current_dir": "/home/manua/hekta/struxto-especificador" }
+        });
+        assert_eq!(
+            session_name_of(&status).unwrap(),
+            json!({ "sessionId": "a1b2", "name": "Pintado de tabiques STR-161" })
+        );
+        // One line, trimmed; long ones cut at 100 characters, not bytes.
+        assert_eq!(
+            session_name_of(&json!({ "session_id": " s ", "session_name": "  demo\n llamada\t\u{7}x " })).unwrap(),
+            json!({ "sessionId": "s", "name": "demo llamada x" })
+        );
+        let long = "á".repeat(99) + " bé";
+        assert_eq!(
+            session_name_of(&json!({ "session_id": "s", "session_name": long })).unwrap()["name"],
+            json!("á".repeat(99))
+        );
+    }
+
+    #[test]
+    fn no_session_name_before_it_has_one_or_without_a_session() {
+        assert_eq!(session_name_of(&json!({ "session_id": "s" })), None);
+        assert_eq!(session_name_of(&json!({ "session_id": "s", "session_name": null })), None);
+        assert_eq!(session_name_of(&json!({ "session_id": "s", "session_name": " \n " })), None);
+        assert_eq!(session_name_of(&json!({ "session_id": "s", "session_name": 7 })), None);
+        assert_eq!(session_name_of(&json!({ "session_name": "apollo" })), None);
+        assert_eq!(session_name_of(&json!({ "session_id": "", "session_name": "apollo" })), None);
     }
 
     #[test]

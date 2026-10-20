@@ -70,6 +70,8 @@ describe("sessions: creation", () => {
       kind: "session",
       id: "a",
       name: "panita",
+      folder: "panita",
+      title: null,
       cwd: String.raw`C:\p\panita`,
       wslDistro: "Ubuntu",
       state: "idle",
@@ -474,6 +476,46 @@ describe("sessions: same name", () => {
     State.sessionEvent(ev("s2", "x"));
     expect(late.name).toBe("x");
     expect(late.ordinal).toBe(2);
+  });
+
+  it("a session Claude Code names goes by that name, numbered only among sessions of that name", () => {
+    const [a, b, c] = ["s1", "s2", "s3"].map((k) => named(k, "struxto-especificador"));
+    expect(State.nameSession("s2", "Agente especificador Opus máximo STR-161")).toBe(true);
+    expect(b).toMatchObject({
+      name: "Agente especificador Opus máximo STR-161", ordinal: 1, folder: "struxto-especificador",
+    });
+    // The others keep their numbers: a label never moves to another session.
+    expect([a, c].map(sessions.displayName)).toEqual(["struxto-especificador", "struxto-especificador 3"]);
+    // Two sessions /rename'd alike are told apart the same way.
+    expect(State.nameSession("s3", "Agente especificador Opus máximo STR-161")).toBe(true);
+    expect(sessions.displayName(c)).toBe("Agente especificador Opus máximo STR-161 2");
+    // Same name again, or a session the island does not know: nothing changes.
+    expect(State.nameSession("s3", "Agente especificador Opus máximo STR-161")).toBe(false);
+    expect(State.nameSession("nobody", "x")).toBe(false);
+    expect(State.sessions).toHaveLength(3);
+    // Its folder still decides nothing but the colour it was given at first.
+    State.sessionEvent(ev("s2", "struxto-especificador"));
+    expect(b.name).toBe("Agente especificador Opus máximo STR-161");
+  });
+
+  it("a session Claude Code names before its folder is known keeps that name", () => {
+    const late = State.sessionEvent({ key: "s1", sessionId: "s1", cwd: "", name: "Session", wslDistro: null });
+    State.nameSession("s1", "apollo");
+    State.sessionEvent(ev("s1", "scout"));
+    expect(late).toMatchObject({ name: "apollo", folder: "scout", cwd: String.raw`C:\p\scout`, ordinal: 1 });
+  });
+
+  it("the left card's tag is the folder once the name is not, else Claude Code", () => {
+    expect(sessions.sessionTag({ name: "Pintado de tabiques", folder: "struxto-especificador" })).toBe("struxto-especificador");
+    expect(sessions.sessionTag({ name: "panita", folder: "panita" })).toBe("Claude Code");
+    expect(sessions.sessionTag({ name: "Session", folder: "" })).toBe("Claude Code");
+  });
+
+  it("the session-name event says whose name and the name, or nothing", () => {
+    expect(sessions.parseSessionName({ sessionId: " a ", name: " apollo " })).toEqual({ sessionId: "a", name: "apollo" });
+    for (const bad of [null, "apollo", {}, { sessionId: "a" }, { name: "apollo" }, { sessionId: "", name: "x" }, { sessionId: "a", name: " " }, { sessionId: "a", name: 3 }]) {
+      expect(sessions.parseSessionName(bad)).toBeNull();
+    }
   });
 
   it("labels split into a name that may be cut and a number that may not", () => {

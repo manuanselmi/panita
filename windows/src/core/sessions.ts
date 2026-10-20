@@ -99,19 +99,26 @@ export function sameOrder(a: readonly { id: string }[], b: readonly { id: string
   return a.length === b.length && a.every((t, i) => t.id === b[i].id);
 }
 
-// ── Telling same-name sessions apart ─────────────────────────────────────────
+// ── Telling sessions apart ───────────────────────────────────────────────────
 //
-// A session is named after its folder, and several sessions in one project —
+// A session is called what Claude Code calls it: the name given with
+// `/rename`, or else the title Claude Code writes for the session after its
+// first prompt ("Pintado de tabiques STR-161") — the name `/resume` lists.
+// Hooks do not carry it; the session's status line does (`session_name`),
+// from its first answer on (pipe.rs, `session-name` event). Until then the
+// session is named after its folder, and several sessions in one project —
 // three terminals on `struxto-especificador`, say — would all read the same.
-// Each session gets a number when it is created: the smallest one no live
-// session of that name holds. The first is shown bare, the others with their
-// number: "struxto-especificador", "struxto-especificador 2", "… 3".
 //
-// The number is the session's for its whole life, so a label never jumps from
-// one live session to another: if the first one ends, the second stays "… 2"
+// So each session also gets a number: the smallest one no live session of the
+// same name holds. The first is shown bare, the others with their number:
+// "struxto-especificador", "struxto-especificador 2", "… 3". A session keeps
+// its number for as long as it keeps its name, so a label never jumps from one
+// live session to another: if the first one ends, the second stays "… 2"
 // (alone, it is still told apart from the one that ended), and the next new
 // session takes the free number — bare again. While none ends in between, the
-// numbers follow the order of creation.
+// numbers follow the order of creation. A session that is named — by Claude
+// Code, or by its folder when it had none — takes the free number for its new
+// name, which is nearly always none at all.
 
 /** The number a new session called `name` gets, given the sessions alive now. */
 export function pickOrdinal(
@@ -137,6 +144,27 @@ export function labelParts(task: { name: string; ordinal?: number }): { name: st
 export function displayName(task: { name: string; ordinal?: number }): string {
   const { name, suffix } = labelParts(task);
   return name + suffix;
+}
+
+/**
+ * The quiet word after a session's name on the left card: its folder once
+ * the session goes by a name of its own — the project it belongs to — and
+ * "Claude Code" while the name still is the folder.
+ */
+export function sessionTag(task: { name: string; folder: string }): string {
+  return task.folder && task.folder !== task.name ? task.folder : "Claude Code";
+}
+
+/**
+ * The `session-name` event's payload (pipe.rs): whose name, and the name.
+ * Null when it says nothing usable.
+ */
+export function parseSessionName(payload: unknown): { sessionId: string; name: string } | null {
+  if (!payload || typeof payload !== "object") return null;
+  const { sessionId, name } = payload as Record<string, unknown>;
+  if (typeof sessionId !== "string" || !sessionId.trim()) return null;
+  if (typeof name !== "string" || !name.trim()) return null;
+  return { sessionId: sessionId.trim(), name: name.trim() };
 }
 
 /** Longest first prompt kept for a session's tooltip. */

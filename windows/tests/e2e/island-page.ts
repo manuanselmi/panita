@@ -76,8 +76,10 @@ export interface Overview {
         title: string | null;
         count: string | null;
         label: LabelFit;
-        /** "Claude Code" after the name: whole or hidden, never cut to "C…". */
+        /** The word after the name — the folder, or "Claude Code": whole or hidden, never cut to "C…". */
         tool: "whole" | "hidden" | "cut";
+        /** That word's text, shown or not. */
+        tag: string | null;
       })
     | null;
   /** The right card's panitas, row by row, left to right. */
@@ -366,6 +368,7 @@ export class IslandPage {
             if (tool.top >= slot.bottom - 0.5 || slot.width < 0.5) return "hidden";
             return tool.right <= slot.right + 0.5 ? "whole" : "cut";
           })(),
+          tag: view.querySelector(".who .tool")?.textContent ?? null,
         } : null,
         panitas: shown(grid) ? [...grid.querySelectorAll(".panita:not(.more)")].map((p) => ({
           id: p.dataset.id,

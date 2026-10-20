@@ -41,6 +41,18 @@ export interface SessionTask extends AgentTask {
    * a Bash call would otherwise rename the session and move its "Open".
    */
   cwd: string;
+  /**
+   * Its folder's name ("struxto-especificador"): what the session is called
+   * until Claude Code names it.
+   */
+  folder: string;
+  /**
+   * Claude Code's name for it — its `/rename`, or else the title Claude Code
+   * gave it after its first prompt, the one `/resume` lists — from its status
+   * line (hooks.ts, `session-name` event). Once known, it is the session's
+   * `name` on every card; null until then.
+   */
+  title: string | null;
   /** The WSL distribution the session runs in; null for a Windows session. */
   wslDistro: string | null;
   /** Last hook event or click — what the order follows. */
@@ -414,6 +426,8 @@ class AppState {
         id: ev.key,
         sessionId: ev.sessionId,
         name: ev.name,
+        folder: ev.name,
+        title: null,
         cwd: ev.cwd,
         wslDistro: ev.wslDistro,
         color: pickSessionColor(ev.name, this.sessions.map((x) => x.color)),
@@ -433,11 +447,11 @@ class AppState {
       this.sessions.push(s);
     } else {
       if (!s.cwd && ev.cwd) {
-        // Named after its folder at last: a new name may need a number of its own.
-        const others = this.sessions.filter((x) => x !== s);
+        // Its folder at last. Unless Claude Code has named it already, that is
+        // its name now, and a new name may need a number of its own.
         s.cwd = ev.cwd;
-        s.name = ev.name;
-        s.ordinal = pickOrdinal(ev.name, others);
+        s.folder = ev.name;
+        if (s.title == null) this.rename(s, ev.name);
       }
       if (ev.wslDistro) s.wslDistro = ev.wslDistro;
     }
@@ -446,6 +460,26 @@ class AppState {
     this.reorderSessions(now);
     this.armExpiry(now);
     return s;
+  }
+
+  /**
+   * Claude Code's name for session `id`, from its status line: from now on
+   * the cards call it that instead of its folder. False when nothing changed,
+   * or the island does not know the session (its next status line names it).
+   */
+  nameSession(id: string, title: string): boolean {
+    const s = this.sessions.find((x) => x.id === id);
+    if (!s || s.title === title) return false;
+    s.title = title;
+    this.rename(s, title);
+    return true;
+  }
+
+  /** A session's new name, and its number among the live sessions of that name. */
+  private rename(s: SessionTask, name: string) {
+    if (s.name === name) return;
+    s.name = name;
+    s.ordinal = pickOrdinal(name, this.sessions.filter((x) => x !== s));
   }
 
   /** SessionEnd: the session leaves the island. Its cards, if up, keep their own copy. */

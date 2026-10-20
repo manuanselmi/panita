@@ -558,7 +558,8 @@ body {
 }
 
 /* With several sessions the name is what tells them apart: when the row is
-   short, "Claude Code" gives way first — whole, never as a stray "C…". The slot
+   short, the word after it — the session's folder, or "Claude Code"
+   (sessionTag in sessions.ts) — gives way first: whole, never as a stray "C…". The slot
    takes whatever the name and the count leave; the label sits on its first
    line after a zero-width spacer, and when it does not fit there it wraps to
    a second line the slot's height hides. */

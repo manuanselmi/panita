@@ -1028,6 +1028,44 @@ describe(`side instance "${INSTANCE}"`, () => {
       for (const n of [2, 3, 4, 5]) await runHook("SessionEnd", payloadOf(same(n), { reason: "exit" }));
       await page.waitForView("the empty card", (v) => v.text.includes("Nothing running right now."));
     });
+
+    it("Claude Code's name for each, from its status line, takes the folder's place and the number's", async () => {
+      await page.pointerAway();
+      for (const n of [1, 2]) await start(n);
+      await page.waitForOverview(
+        "two of them, numbered",
+        (o) => o.primary?.name === `${NAME} 2` && o.panitas.map((p) => p.name).join() === NAME,
+      );
+      const from = readSideLog().length;
+      // What Claude Code 2.1.304 hands its status line once the session has a
+      // name — its /rename, else the title it gave the session — cut down.
+      const nameOf = (n: number, name: string) =>
+        runHook("StatusLine", payloadOf(same(n), { session_name: name, model: { display_name: "Opus" } }));
+      const title = "Homologación D e IM Knauf";
+      for (const run of [await nameOf(1, title), await nameOf(2, "apollo")]) {
+        // Nothing printed, and quick: the terminal's status line stays empty.
+        expect(run).toMatchObject({ code: 0, stdout: "", stderr: "" });
+        expect(run.ms).toBeLessThan(QUICK_MS);
+      }
+      await page.emit("tray", "open");
+      await waitFor("the island to expand", async () => (await page.settle()).width === SIZES.expanded.width);
+      const o = await page.waitForOverview(
+        "both by their names, no numbers",
+        (o) => o.primary?.name === "apollo" && o.panitas.map((p) => p.name).join() === title,
+      );
+      // The left card names the project after the name, whole or not at all;
+      // the tooltips still give the folder and the first prompt.
+      expect(o.primary?.tag).toBe(NAME);
+      expect(o.primary?.tool).not.toBe("cut");
+      expect(o.primary?.title).toBe(`apollo\n${CWD_SAME}\n“${prompts[1]}”`);
+      expect(o.panitas[0].title).toBe(`${title}\n${CWD_SAME}\n“${prompts[0]}”`);
+      expect(o.fits).toBe(true);
+      // Not a session event: not logged.
+      expect(readSideLog().slice(from)).not.toContain("StatusLine");
+      await page.screenshot("24-session-names");
+      for (const n of [1, 2]) await runHook("SessionEnd", payloadOf(same(n), { reason: "exit" }));
+      await page.waitForView("the empty card", (v) => v.text.includes("Nothing running right now."));
+    });
   });
 
   describe("the explanation under the command", () => {
